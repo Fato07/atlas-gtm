@@ -1,0 +1,441 @@
+{
+  "name": "Lead Scorer - Batch Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-scorer/batch",
+        "authentication": "headerAuth",
+        "options": {
+          "rawBody": false
+        },
+        "responseMode": "responseNode"
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [100, 300],
+      "webhookId": "lead-scorer-batch"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "validate-secret",
+              "leftValue": "={{ $json.headers['x-webhook-secret'] }}",
+              "rightValue": "={{ $env.WEBHOOK_SECRET }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "auth-check",
+      "name": "Auth Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: { code: 'AUTH_FAILED', message: 'Invalid webhook secret' } }) }}",
+        "options": {
+          "responseCode": 401,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "auth-failed-response",
+      "name": "Auth Failed Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract leads from batch request\nconst body = $input.first().json.body;\nconst leads = body.leads || [body]; // Support single lead or batch\n\nreturn leads.map(lead => ({ json: {\n  lead,\n  force_rescore: body.force_rescore || false,\n  callback_url: body.callback_url || null\n}}));"
+      },
+      "id": "extract-leads",
+      "name": "Extract Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEAD_SCORER_URL || 'http://localhost:3001' }}/score",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ...$json.lead, force_rescore: $json.force_rescore }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "call-lead-scorer",
+      "name": "Call Lead Scorer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-tier-qualified",
+              "leftValue": "={{ $json.data?.tier }}",
+              "rightValue": "qualified",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-needs-review",
+      "name": "Needs Slack Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_REVIEW_CHANNEL || '#lead-reviews' }}",
+        "text": "={{ '🎯 *New Lead for Review*\\n\\n*Lead ID:* ' + $json.data.lead_id + '\\n*Score:* ' + $json.data.score + '/100\\n*Tier:* ' + $json.data.tier + '\\n\\n*Top Signals:*\\n' + ($json.data.scoring_breakdown || []).slice(0, 3).map(s => '• ' + s.attribute + ': ' + s.reasoning).join('\\n') + '\\n\\n*Recommended Angle:* ' + $json.data.recommended_angle + '\\n\\n*Personalization Hints:*\\n' + ($json.data.personalization_hints || []).slice(0, 3).map(h => '• ' + h).join('\\n') }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        },
+        "attachments": [
+          {
+            "fallback": "Lead Review Actions",
+            "callback_id": "={{ 'lead_review_' + $json.data.lead_id }}",
+            "actions": [
+              {
+                "name": "approve",
+                "text": "✅ Approve (Hot)",
+                "type": "button",
+                "style": "primary",
+                "value": "{{ JSON.stringify({ lead_id: $json.data.lead_id, action: 'approve', new_tier: 'hot' }) }}"
+              },
+              {
+                "name": "approve_warm",
+                "text": "👍 Approve (Warm)",
+                "type": "button",
+                "value": "{{ JSON.stringify({ lead_id: $json.data.lead_id, action: 'approve', new_tier: 'warm' }) }}"
+              },
+              {
+                "name": "reject",
+                "text": "❌ Reject",
+                "type": "button",
+                "style": "danger",
+                "value": "{{ JSON.stringify({ lead_id: $json.data.lead_id, action: 'reject', new_tier: 'nurture' }) }}"
+              }
+            ]
+          }
+        ]
+      },
+      "id": "send-slack-notification",
+      "name": "Send Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 100],
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_CREDENTIALS_ID",
+          "name": "Slack API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results\nconst results = $input.all().map(item => item.json);\n\nconst summary = {\n  total_processed: results.length,\n  by_tier: {\n    hot: results.filter(r => r.data?.tier === 'hot').length,\n    warm: results.filter(r => r.data?.tier === 'warm').length,\n    qualified: results.filter(r => r.data?.tier === 'qualified').length,\n    nurture: results.filter(r => r.data?.tier === 'nurture').length,\n    disqualified: results.filter(r => r.data?.tier === 'disqualified').length\n  },\n  errors: results.filter(r => !r.success).map(r => ({\n    lead_id: r.data?.lead_id || 'unknown',\n    error: r.error?.message || 'Unknown error'\n  }))\n};\n\nreturn [{ json: {\n  success: true,\n  data: summary,\n  results: results\n}}];"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "success-response",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1500, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-callback",
+              "leftValue": "={{ $('Extract Leads').first().json.callback_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-callback",
+      "name": "Has Callback URL?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Extract Leads').first().json.callback_url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Aggregate Results').first().json) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-callback",
+      "name": "Send Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1700, 350]
+    },
+    {
+      "parameters": {},
+      "id": "no-op-end",
+      "name": "No Op",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1700, 450]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Auth Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Check": {
+      "main": [
+        [
+          {
+            "node": "Extract Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auth Failed Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Leads": {
+      "main": [
+        [
+          {
+            "node": "Call Lead Scorer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Lead Scorer": {
+      "main": [
+        [
+          {
+            "node": "Needs Slack Review?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Slack Review?": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Slack Notification": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Callback URL?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Callback URL?": {
+      "main": [
+        [
+          {
+            "node": "Send Callback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Op",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "1.0.0",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "atlas-gtm-lead-scorer"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "lead-scoring"
+    },
+    {
+      "name": "atlas-gtm"
+    }
+  ],
+  "pinData": {},
+  "notes": [
+    {
+      "id": "note-1",
+      "content": "## Lead Scorer Batch Workflow\n\n### Environment Variables Required:\n- `WEBHOOK_SECRET`: Secret for authenticating webhook requests\n- `LEAD_SCORER_URL`: URL of the lead scorer service (default: http://localhost:3001)\n- `SLACK_REVIEW_CHANNEL`: Slack channel for qualified leads (default: #lead-reviews)\n\n### Workflow Flow:\n1. **Webhook Trigger**: Receives POST requests with lead data\n2. **Auth Check**: Validates X-Webhook-Secret header\n3. **Extract Leads**: Parses single lead or batch from request body\n4. **Call Lead Scorer**: Scores each lead via HTTP (with retry)\n5. **Needs Slack Review?**: Routes qualified (tier 2) leads to Slack\n6. **Send Slack Notification**: Posts interactive message to review channel\n7. **Aggregate Results**: Combines all scoring results\n8. **Success Response**: Returns aggregated results to caller\n9. **Send Callback**: Optionally POSTs results to callback_url if provided\n\n### Request Format:\n```json\n{\n  \"leads\": [\n    {\n      \"lead_id\": \"lead_001\",\n      \"email\": \"john@company.com\",\n      \"company\": \"Company Inc\",\n      \"source\": \"clay\",\n      \"title\": \"VP Engineering\",\n      ...\n    }\n  ],\n  \"force_rescore\": false,\n  \"callback_url\": \"https://your-service/callback\"\n}\n```\n\n### Single Lead Shorthand:\n```json\n{\n  \"lead_id\": \"lead_001\",\n  \"email\": \"john@company.com\",\n  ...\n}\n```",
+      "position": [100, 500]
+    }
+  ]
+}

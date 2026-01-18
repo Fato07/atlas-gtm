@@ -155,3 +155,95 @@ export const OPTIONAL_ENV_VARS = [
   'TIMEZONE',
   'NODE_ENV',
 ] as const;
+
+// ===========================================
+// Lead Scorer Types
+// ===========================================
+
+/** Unique identifier for a lead */
+export type LeadId = string & { readonly __brand: 'LeadId' };
+
+/** Scoring tier assignment */
+export type ScoringTier = 'priority' | 'qualified' | 'nurture' | 'disqualified';
+
+/** Messaging angle recommendation */
+export type MessagingAngle =
+  | 'technical'
+  | 'roi'
+  | 'compliance'
+  | 'speed'
+  | 'integration';
+
+/** Lead source tracking */
+export type LeadSource =
+  | 'clay'
+  | 'linkedin'
+  | 'referral'
+  | 'website'
+  | 'conference'
+  | 'cold_outbound'
+  | 'inbound'
+  | 'partner';
+
+/** Funding stage for firmographic scoring */
+export type FundingStage =
+  | 'pre_seed'
+  | 'seed'
+  | 'series_a'
+  | 'series_b'
+  | 'series_c'
+  | 'series_d_plus'
+  | 'public'
+  | 'bootstrapped';
+
+// ===========================================
+// ICP Rule Types (for Lead Scorer)
+// ===========================================
+
+/** ICP Rule category */
+export type RuleCategory =
+  | 'firmographic'   // company_size, industry, revenue, funding_stage, location
+  | 'technographic'  // tech_stack, tools_used, integrations
+  | 'behavioral'     // hiring_signals, recent_news, content_engagement
+  | 'intent';        // website_visits, content_downloads, keyword_searches
+
+/** ICP Rule operator */
+export type RuleOperator =
+  | 'range'          // Numeric between min/max
+  | 'equals'         // Exact match
+  | 'contains'       // String contains
+  | 'greater_than'   // Numeric >
+  | 'less_than'      // Numeric <
+  | 'in_list';       // Value in array
+
+/** Rule condition types */
+export type RuleCondition =
+  | { type: 'range'; min: number; max: number }
+  | { type: 'equals'; value: string | number | boolean }
+  | { type: 'contains'; value: string }
+  | { type: 'greater_than'; value: number }
+  | { type: 'less_than'; value: number }
+  | { type: 'in_list'; values: string[] };
+
+/** ICP Rule from Qdrant */
+export interface ICPRule {
+  id: string;
+  brain_id: BrainId;
+  vertical: string;
+  sub_vertical?: string;
+
+  category: RuleCategory;
+  attribute: string;
+  display_name: string;
+
+  condition: RuleCondition;
+  operator: RuleOperator;
+
+  score_weight: number;
+  max_score: number;
+  is_knockout: boolean;
+
+  reasoning: string;
+  source: 'market_research' | 'customer_feedback' | 'hypothesis';
+  validated: boolean;
+}
