@@ -215,6 +215,11 @@ bun run seed:brain --vertical=fintech --source=./data/fintech-kb.json
 - Qdrant (vector DB at localhost:6333) - 7 collections: brains, icp_rules, response_templates, objection_handlers, market_research, insights, verticals (002-qdrant-mcp)
 - Python 3.11+ (MCP servers), TypeScript 5.4+ (seeding script - refactor target) + FastMCP ≥0.4.0, qdrant-client ≥1.9.0, voyageai ≥0.2.0, pydantic ≥2.7.0, tenacity, structlog (003-brain-lifecycle)
 - Qdrant (vector DB at localhost:6333) - existing collections: brains, icp_rules, response_templates, objection_handlers, market_research (003-brain-lifecycle)
+- TypeScript 5.4+ (Bun runtime) + @anthropic-ai/sdk, @qdrant/js-client-rest, structlog (JSON logging), Zod (validation) (004-lead-scorer)
+- Lead Scorer Agent: 80k token budget, brain-scoped queries, sub-agent isolation for CRM enrichment (004-lead-scorer)
+- Webhook API: POST /webhook/score-lead with X-Webhook-Secret authentication (004-lead-scorer)
+- Structured logging: lead_scored, scoring_failed, rule_evaluated events (004-lead-scorer)
 
 ## Recent Changes
 - 001-gtm-infra: Added TypeScript 5.4+ (Bun runtime), Python 3.11+ (MCP servers) + @qdrant/js-client-rest, voyageai (Python), Docker Compose v2
+- 004-lead-scorer: First production agent - scores leads against ICP rules, detects verticals, calculates tiers, recommends messaging angles, integrates with n8n/Slack
