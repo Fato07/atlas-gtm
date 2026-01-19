@@ -21,6 +21,12 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
 ]
+evaluation = [
+    "ragas>=0.1.0",
+    "langfuse>=2.0.0,<3.0.0",  # Pin to v2 to avoid v3 breaking API changes
+    "openai>=1.0.0",  # Direct OpenAI client for llm_factory
+    "datasets>=2.14.0",
+]
 
 [build-system]
 requires = ["hatchling"]
