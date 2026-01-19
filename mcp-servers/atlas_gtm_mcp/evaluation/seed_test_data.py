@@ -33,12 +33,19 @@ COLLECTIONS = [
 ]
 
 
-def get_mock_embedding(text: str) -> list[float]:
+def get_mock_embedding(text: str, rank_offset: int = 0) -> list[float]:
     """
     Generate a deterministic mock embedding for CI testing.
 
     Uses a simple hash-based approach to generate consistent vectors.
     This avoids calling the Voyage AI API in CI.
+
+    Args:
+        text: Text to embed
+        rank_offset: Optional offset to create micro-variation for ranking.
+                    Higher offsets produce slightly different embeddings that
+                    will have lower cosine similarity, enabling proper ranking
+                    in context precision evaluation.
     """
     import hashlib
 
@@ -56,6 +63,16 @@ def get_mock_embedding(text: str) -> list[float]:
         # Add some variation based on position
         value = value * 0.5 + (hash(text + str(i)) % 1000) / 2000 - 0.25
         embedding.append(value)
+
+    # Add micro-variation for ranking if offset provided
+    # This creates slightly different embeddings while maintaining high similarity
+    # Epsilon is small enough to keep cosine similarity > 0.99
+    if rank_offset > 0:
+        epsilon = 0.001 * rank_offset
+        for i in range(VECTOR_DIM):
+            # Deterministic perturbation based on index and offset
+            perturbation = epsilon * ((hash(f"{text}_{rank_offset}_{i}") % 1000) / 500 - 1)
+            embedding[i] += perturbation
 
     # Normalize the vector
     magnitude = sum(v ** 2 for v in embedding) ** 0.5
@@ -154,9 +171,10 @@ def create_points_from_golden_dataset(dataset: dict, collection_name: str) -> li
         for i, context in enumerate(expected_contexts[1:], start=1):
             extra_point_id = str(uuid.uuid4())
 
-            # IMPORTANT: Use same embedding key as primary context
-            # Evaluator queries with `question`, so all contexts must match
-            varied_embedding = get_mock_embedding(question)
+            # Use same base embedding with micro-variation for ranking
+            # rank_offset creates slightly lower cosine similarity, enabling
+            # Ragas context_precision to measure proper ranking
+            varied_embedding = get_mock_embedding(question, rank_offset=i)
 
             extra_payload = {
                 "text": context,

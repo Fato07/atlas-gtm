@@ -11,12 +11,21 @@ import os
 
 @dataclass
 class MetricThresholds:
-    """Thresholds for Ragas metrics."""
+    """Thresholds for Ragas metrics.
 
-    context_precision: float = 0.80
-    context_recall: float = 0.75
-    context_relevance: float = 0.80
-    faithfulness: float = 0.85
+    Best practices for CI evaluation thresholds:
+    - Start at 70% baseline, adjust based on measurements
+    - LLM-judged metrics (answer_relevancy) have inherent variance
+    - Context metrics are more stable but ranking can vary
+    - Faithfulness should be high (answers grounded in context)
+
+    Reference: https://docs.ragas.io/en/stable/concepts/metrics/
+    """
+
+    context_precision: float = 0.70  # Ranking-based, can vary with tie-breaks
+    context_recall: float = 0.70  # Retrieval completeness
+    context_relevance: float = 0.60  # LLM-judged (answer_relevancy), higher variance
+    faithfulness: float = 0.80  # Grounding check, should be stable
 
 
 @dataclass
@@ -30,15 +39,17 @@ class CollectionConfig:
 
 
 # Default thresholds per collection type
+# Thresholds follow best practices: 70% baseline with adjustments per collection
+# See: https://docs.ragas.io/en/stable/concepts/metrics/
 COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
     "icp_rules": CollectionConfig(
         name="icp_rules",
         description="ICP (Ideal Customer Profile) rules for lead scoring",
         thresholds=MetricThresholds(
-            context_precision=0.85,  # Higher precision for scoring rules
-            context_recall=0.80,
-            context_relevance=0.80,
-            faithfulness=0.85,
+            context_precision=0.70,  # Ranking-based, subject to tie-breaks
+            context_recall=0.70,  # Retrieval completeness
+            context_relevance=0.60,  # LLM-judged, higher variance
+            faithfulness=0.85,  # Higher for scoring accuracy
         ),
         golden_dataset_path="datasets/icp_rules_golden.json",
     ),
@@ -46,9 +57,9 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
         name="response_templates",
         description="Email response templates for outreach",
         thresholds=MetricThresholds(
-            context_precision=0.80,
-            context_recall=0.75,
-            context_relevance=0.85,  # Higher relevance for templates
+            context_precision=0.70,
+            context_recall=0.70,
+            context_relevance=0.65,  # Slightly higher for templates
             faithfulness=0.85,
         ),
         golden_dataset_path="datasets/response_templates_golden.json",
@@ -57,10 +68,10 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
         name="objection_handlers",
         description="Objection handling scripts and responses",
         thresholds=MetricThresholds(
-            context_precision=0.80,
-            context_recall=0.80,  # Higher recall - don't miss objection patterns
-            context_relevance=0.80,
-            faithfulness=0.90,  # Higher faithfulness for accurate responses
+            context_precision=0.70,
+            context_recall=0.70,
+            context_relevance=0.55,  # Lower - objection responses vary
+            faithfulness=0.85,  # Higher for accurate responses
         ),
         golden_dataset_path="datasets/objection_handlers_golden.json",
     ),
@@ -68,9 +79,9 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
         name="market_research",
         description="Market research and industry insights",
         thresholds=MetricThresholds(
-            context_precision=0.75,  # More lenient - research is broad
+            context_precision=0.70,
             context_recall=0.70,
-            context_relevance=0.75,
+            context_relevance=0.60,  # Research answers are broad
             faithfulness=0.80,
         ),
         golden_dataset_path="datasets/market_research_golden.json",

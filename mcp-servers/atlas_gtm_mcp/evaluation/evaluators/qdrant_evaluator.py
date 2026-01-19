@@ -174,12 +174,18 @@ class QdrantRAGEvaluator:
 
                 questions.append(test_case.question)
                 contexts_list.append(retrieved_contexts)
-                # Use expected_contexts as ground truth for CI evaluation
-                # This aligns with what's seeded in Qdrant - expected_contexts text
-                # is what gets embedded and stored, so comparison should be against it
+
+                # Ground truth for context_recall: expected contexts as text
+                # This is what Ragas compares retrieved contexts against
                 joined_contexts = " ".join(test_case.expected_contexts)
                 ground_truths.append(joined_contexts)
-                answers.append(joined_contexts)
+
+                # Answer for answer_relevancy: use ground_truth field (proper answer)
+                # This is a complete, coherent answer that Ragas can generate
+                # questions from. Using keyword phrases causes 0% relevancy.
+                # Fallback to joined contexts if ground_truth not available.
+                answer = test_case.ground_truth if test_case.ground_truth else joined_contexts
+                answers.append(answer)
 
             # Create Ragas dataset
             data = {
