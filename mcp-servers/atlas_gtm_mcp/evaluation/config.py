@@ -51,7 +51,7 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
             context_relevance=0.85,  # Higher relevance for templates
             faithfulness=0.85,
         ),
-        golden_dataset_path="datasets/templates_golden.json",
+        golden_dataset_path="datasets/response_templates_golden.json",
     ),
     "objection_handlers": CollectionConfig(
         name="objection_handlers",
@@ -62,7 +62,7 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
             context_relevance=0.80,
             faithfulness=0.90,  # Higher faithfulness for accurate responses
         ),
-        golden_dataset_path="datasets/handlers_golden.json",
+        golden_dataset_path="datasets/objection_handlers_golden.json",
     ),
     "market_research": CollectionConfig(
         name="market_research",
@@ -73,7 +73,7 @@ COLLECTION_THRESHOLDS: dict[str, CollectionConfig] = {
             context_relevance=0.75,
             faithfulness=0.80,
         ),
-        golden_dataset_path="datasets/research_golden.json",
+        golden_dataset_path="datasets/market_research_golden.json",
     ),
 }
 

@@ -23,7 +23,7 @@ dev = [
 ]
 evaluation = [
     "ragas>=0.1.0",
-    "langfuse>=2.0.0",
+    "langfuse>=2.0.0,<3.0.0",  # Pin to v2 to avoid v3 breaking API changes
     "langchain-openai>=0.1.0",
     "datasets>=2.14.0",
 ]

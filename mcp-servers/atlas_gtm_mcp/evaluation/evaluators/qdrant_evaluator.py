@@ -11,7 +11,7 @@ import asyncio
 
 try:
     from ragas import evaluate
-    from ragas.metrics import (
+    from ragas.metrics.collections import (
         context_precision,
         context_recall,
         faithfulness,
@@ -274,13 +274,13 @@ class QdrantRAGEvaluator:
                 ]
             )
 
-        # Search Qdrant
-        results = self.client.search(
+        # Search Qdrant (query_points is the new API, .points returns list of ScoredPoint)
+        results = self.client.query_points(
             collection_name=collection_name,
-            query_vector=query_vector,
+            query=query_vector,
             query_filter=filter_conditions,
             limit=top_k,
-        )
+        ).points
 
         # Extract text content from results
         contexts = []

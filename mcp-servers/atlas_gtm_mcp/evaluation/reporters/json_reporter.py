@@ -6,7 +6,7 @@ Outputs evaluation results to JSON format.
 
 import json
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -77,7 +77,7 @@ class JSONReporter:
             "collections": [
                 self.format_result(r) for r in results.collection_results
             ],
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
     def save_report(
@@ -108,7 +108,7 @@ class JSONReporter:
         else:
             data = {
                 "collection": self.format_result(results),
-                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
 
         with open(output_path, "w", encoding="utf-8") as f:

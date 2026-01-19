@@ -5,7 +5,7 @@ Reports evaluation metrics to Langfuse for unified observability.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import structlog
@@ -169,7 +169,7 @@ class LangfuseReporter:
         Returns:
             Parent trace ID
         """
-        run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         # Create parent trace for the evaluation run
         parent_trace = self.client.trace(
