@@ -72,17 +72,20 @@ class LangfuseReporter:
         Returns:
             Trace ID created in Langfuse
         """
+        # Build initial metadata
+        trace_metadata = {
+            "collection_name": result.collection_name,
+            "brain_id": brain_id,
+            "run_id": run_id,
+            "test_cases_evaluated": result.test_cases_evaluated,
+            "passed": result.passed,
+            "duration_seconds": result.duration_seconds,
+        }
+
         # Create evaluation trace
         trace = self.client.trace(
             name=f"rag_evaluation_{result.collection_name}",
-            metadata={
-                "collection_name": result.collection_name,
-                "brain_id": brain_id,
-                "run_id": run_id,
-                "test_cases_evaluated": result.test_cases_evaluated,
-                "passed": result.passed,
-                "duration_seconds": result.duration_seconds,
-            },
+            metadata=trace_metadata,
             tags=["evaluation", "ragas", result.collection_name],
         )
 
@@ -126,22 +129,13 @@ class LangfuseReporter:
 
         # Record failures if any
         if result.failures:
-            trace.update(
-                metadata={
-                    **trace.metadata,
-                    "failures": result.failures,
-                }
-            )
+            trace_metadata["failures"] = result.failures
+            trace.update(metadata=trace_metadata)
 
         # Record error if any
         if result.error:
-            trace.update(
-                metadata={
-                    **trace.metadata,
-                    "error": result.error,
-                },
-                level="ERROR",
-            )
+            trace_metadata["error"] = result.error
+            trace.update(metadata=trace_metadata, level="ERROR")
 
         logger.info(
             "Reported evaluation to Langfuse",
