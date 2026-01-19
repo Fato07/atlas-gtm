@@ -8,6 +8,7 @@ Uses Ragas metrics for evaluation.
 from dataclasses import dataclass
 from typing import Optional
 import asyncio
+import math
 
 try:
     from ragas import evaluate
@@ -18,7 +19,7 @@ try:
         AnswerRelevancy,
     )
     from ragas.llms import llm_factory
-    from ragas.embeddings import OpenAIEmbeddings
+    from ragas.embeddings.base import embedding_factory
     from openai import OpenAI as OpenAIClient
     from datasets import Dataset
 
@@ -189,8 +190,9 @@ class QdrantRAGEvaluator:
             client = OpenAIClient(api_key=self.config.openai_api_key)
             evaluator_llm = llm_factory(self.config.evaluator_model, client=client)
 
-            # Initialize embeddings for AnswerRelevancy metric
-            evaluator_embeddings = OpenAIEmbeddings(
+            # Initialize embeddings for AnswerRelevancy metric using factory
+            evaluator_embeddings = embedding_factory(
+                "openai",
                 model="text-embedding-3-small",
                 client=client,
             )
@@ -209,12 +211,22 @@ class QdrantRAGEvaluator:
                 metrics=ragas_metrics,
             )
 
-            # Extract metrics
+            # Extract metrics with defensive handling for nan/list values
+            def safe_float(value, default: float = 0.0) -> float:
+                """Safely convert value to float, handling nan and lists."""
+                if isinstance(value, list):
+                    value = value[0] if value else default
+                try:
+                    result = float(value)
+                    return default if math.isnan(result) else result
+                except (TypeError, ValueError):
+                    return default
+
             metrics = EvaluationMetrics(
-                context_precision=float(results["context_precision"]),
-                context_recall=float(results["context_recall"]),
-                faithfulness=float(results["faithfulness"]),
-                answer_relevancy=float(results["answer_relevancy"]),
+                context_precision=safe_float(results["context_precision"]),
+                context_recall=safe_float(results["context_recall"]),
+                faithfulness=safe_float(results["faithfulness"]),
+                answer_relevancy=safe_float(results["answer_relevancy"]),
             )
 
             # Check thresholds
