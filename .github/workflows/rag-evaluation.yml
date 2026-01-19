@@ -44,12 +44,10 @@ jobs:
 
       - name: Seed test data
         env:
-          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          QDRANT_URL: http://localhost:6333
         run: |
           cd mcp-servers
-          uv run python -c "print('Seeding would happen here')"
-          # TODO: Add actual seeding when data exists
-          # uv run python -m atlas_gtm_mcp.qdrant.seed --test-data
+          uv run python -m atlas_gtm_mcp.evaluation.seed_test_data
 
       - name: Run RAG evaluation
         env:

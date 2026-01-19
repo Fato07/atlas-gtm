@@ -301,7 +301,7 @@ class QdrantRAGEvaluator:
 
     async def _get_embedding(self, text: str) -> list[float]:
         """
-        Get embedding for text using Voyage AI.
+        Get embedding for text using Voyage AI or mock embeddings in CI.
 
         Args:
             text: Text to embed
@@ -309,9 +309,17 @@ class QdrantRAGEvaluator:
         Returns:
             Embedding vector
         """
+        import os
+
         # Check cache
         if text in self._embedding_cache:
             return self._embedding_cache[text]
+
+        # Use mock embeddings in CI mode
+        if os.getenv("CI") or os.getenv("USE_MOCK_EMBEDDINGS"):
+            embedding = self._get_mock_embedding(text)
+            self._embedding_cache[text] = embedding
+            return embedding
 
         try:
             import voyageai
@@ -332,6 +340,35 @@ class QdrantRAGEvaluator:
         except Exception as e:
             logger.error("Failed to get embedding", error=str(e))
             raise
+
+    def _get_mock_embedding(self, text: str) -> list[float]:
+        """
+        Generate deterministic mock embedding for CI testing.
+
+        Must match the algorithm in seed_test_data.py for consistency.
+        """
+        import hashlib
+
+        VECTOR_DIM = 1024
+
+        # Create a deterministic seed from the text
+        text_hash = hashlib.sha256(text.encode()).hexdigest()
+
+        # Generate pseudo-random but deterministic values
+        embedding = []
+        for i in range(VECTOR_DIM):
+            byte_idx = i % 32
+            byte_val = int(text_hash[byte_idx * 2:(byte_idx + 1) * 2], 16)
+            value = (byte_val / 127.5) - 1.0
+            value = value * 0.5 + (hash(text + str(i)) % 1000) / 2000 - 0.25
+            embedding.append(value)
+
+        # Normalize the vector
+        magnitude = sum(v ** 2 for v in embedding) ** 0.5
+        if magnitude > 0:
+            embedding = [v / magnitude for v in embedding]
+
+        return embedding
 
 
 async def run_evaluation(
