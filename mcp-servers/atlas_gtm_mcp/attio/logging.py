@@ -261,6 +261,7 @@ def log_api_call(
     error: str | None = None,
     retry_attempt: int = 0,
     correlation_id: str | None = None,
+    retry_after: float | None = None,
 ) -> None:
     """Log Attio API calls for debugging.
 
@@ -272,6 +273,7 @@ def log_api_call(
         error: Error message if failed
         retry_attempt: Which retry attempt (0 = first try)
         correlation_id: Request correlation ID
+        retry_after: Retry-After header value in seconds (for 429 responses)
     """
     log_data = {
         "method": method,
@@ -285,6 +287,8 @@ def log_api_call(
         log_data["latency_ms"] = round(latency_ms, 2)
     if retry_attempt > 0:
         log_data["retry_attempt"] = retry_attempt
+    if retry_after is not None:
+        log_data["retry_after"] = retry_after
 
     if error:
         log_data["error"] = error[:200]  # Truncate

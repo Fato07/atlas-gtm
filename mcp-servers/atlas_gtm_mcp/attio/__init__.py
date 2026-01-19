@@ -18,6 +18,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from tenacity import (
+    RetryCallState,
     retry,
     retry_if_exception_type,
     stop_after_attempt,
@@ -35,11 +36,13 @@ from .models import (
     ActivityType,
     AttioErrorType,
     PipelineStage,
+    VALID_STAGE_TRANSITIONS,
     classify_http_error,
     validate_email,
     validate_list_id,
     validate_non_empty_string,
     validate_record_id,
+    validate_stage_transition,
 )
 
 # =============================================================================
@@ -57,6 +60,33 @@ RETRY_MAX_SECONDS = 10.0
 
 # Timeout configuration per FR-004
 DEFAULT_TIMEOUT_SECONDS = 30.0
+
+# Module-level cache for list status mappings (C3)
+# Maps list_id -> {status_name -> status_id}
+_list_status_cache: dict[str, dict[str, str]] = {}
+
+
+def _wait_with_retry_after(retry_state: RetryCallState) -> float:
+    """Custom wait strategy that respects Retry-After header (C2).
+
+    Uses exponential backoff by default, but if the exception has a
+    retry_after value from the Retry-After header, uses that instead.
+
+    Args:
+        retry_state: Tenacity retry state
+
+    Returns:
+        Number of seconds to wait before next retry
+    """
+    # Check if the exception has a retry_after value
+    exception = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exception, AttioRetriableError) and exception.retry_after:
+        # Use Retry-After header value, capped at max
+        return min(exception.retry_after, RETRY_MAX_SECONDS)
+
+    # Fall back to exponential backoff
+    exp_wait = wait_exponential(multiplier=RETRY_START_SECONDS, max=RETRY_MAX_SECONDS)
+    return exp_wait(retry_state)
 
 
 # =============================================================================
@@ -81,7 +111,15 @@ class AttioAPIError(Exception):
 class AttioRetriableError(AttioAPIError):
     """Error that should be retried (rate limit, network, timeout)."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        error_type: AttioErrorType = AttioErrorType.UNKNOWN,
+        status_code: int | None = None,
+        retry_after: float | None = None,
+    ):
+        super().__init__(message, error_type, status_code)
+        self.retry_after = retry_after  # Seconds to wait before retry (from Retry-After header)
 
 
 class AttioNonRetriableError(AttioAPIError):
@@ -163,9 +201,28 @@ class AttioClient:
         # Try to extract error message from response
         try:
             error_body = response.json()
-            error_message = error_body.get("message", error_body.get("error", str(response.text)))
+            # Handle nested error structures like {"error": {"message": "..."}}
+            error_content = error_body.get("message") or error_body.get("error")
+            if isinstance(error_content, dict):
+                error_message = error_content.get("message", str(error_content))
+            elif error_content:
+                error_message = str(error_content)
+            else:
+                error_message = str(response.text)
         except Exception:
             error_message = response.text[:200] if response.text else f"HTTP {status_code}"
+
+        # Extract Retry-After header for rate limit responses (C2)
+        retry_after: float | None = None
+        if status_code == 429:
+            retry_after_header = response.headers.get("Retry-After")
+            if retry_after_header:
+                try:
+                    # Retry-After can be seconds (integer) or HTTP-date
+                    retry_after = float(retry_after_header)
+                except ValueError:
+                    # If it's an HTTP-date, use default backoff
+                    retry_after = None
 
         # Sanitize error message (FR-018)
         sanitized_message = self._sanitize_error_message(error_message, error_type)
@@ -176,10 +233,11 @@ class AttioClient:
             status_code=status_code,
             error=sanitized_message,
             correlation_id=correlation_id,
+            retry_after=retry_after,
         )
 
         if AttioErrorType.is_retriable(error_type):
-            raise AttioRetriableError(sanitized_message, error_type, status_code)
+            raise AttioRetriableError(sanitized_message, error_type, status_code, retry_after)
         else:
             raise AttioNonRetriableError(sanitized_message, error_type, status_code)
 
@@ -221,7 +279,7 @@ class AttioClient:
     @retry(
         retry=retry_if_exception_type(AttioRetriableError),
         stop=stop_after_attempt(MAX_RETRIES),
-        wait=wait_exponential(multiplier=RETRY_START_SECONDS, max=RETRY_MAX_SECONDS),
+        wait=_wait_with_retry_after,  # Custom wait that respects Retry-After header (C2)
         reraise=True,
     )
     async def _request(
@@ -567,9 +625,6 @@ def register_attio_tools(mcp: FastMCP) -> None:
     # FR-009: update_pipeline_stage
     # =========================================================================
 
-    # Cache for list status mappings (stage name -> status_id)
-    _list_status_cache: dict[str, dict[str, str]] = {}
-
     async def _get_list_status_mapping(
         client: AttioClient,
         list_id: str,
@@ -617,23 +672,33 @@ def register_attio_tools(mcp: FastMCP) -> None:
         record_id: str,
         stage: str,
         list_id: str | None = None,
+        force: bool = False,
     ) -> dict:
         """
         Update a record's pipeline stage in Attio.
+
+        Stage transitions are validated to ensure workflow integrity:
+        - new_reply → qualifying, closed_lost
+        - qualifying → meeting_scheduled, closed_lost
+        - meeting_scheduled → meeting_held, closed_lost
+        - meeting_held → proposal, closed_lost
+        - proposal → closed_won, closed_lost
+        - closed_won, closed_lost are terminal states
 
         Args:
             record_id: The record ID
             stage: New stage name (must be valid pipeline stage)
             list_id: The pipeline/list ID (optional, uses ATTIO_PIPELINE_LIST_ID if not provided)
+            force: If True, skip transition validation (use with caution)
 
         Returns:
-            Updated entry
+            Updated entry with previous_stage and new_stage in response
 
         Raises:
-            ToolError: On validation errors or if record not in pipeline
+            ToolError: On validation errors, invalid transition, or if record not in pipeline
         """
         tool_name = "update_pipeline_stage"
-        params = {"record_id": record_id, "stage": stage, "list_id": list_id}
+        params = {"record_id": record_id, "stage": stage, "list_id": list_id, "force": force}
         start_time = time.perf_counter()
         correlation_id = generate_correlation_id()
 
@@ -670,20 +735,53 @@ def register_attio_tools(mcp: FastMCP) -> None:
                     "Add the record to the pipeline first."
                 )
 
-            entry_id = entries[0]["id"]["entry_id"]
+            entry = entries[0]
+            entry_id = entry["id"]["entry_id"]
 
             # Get status mapping to find status_id for the stage name
             status_mapping = await _get_list_status_mapping(
                 client, pipeline_list_id, correlation_id
             )
 
-            status_id = status_mapping.get(stage.lower())
+            # Create reverse mapping (status_id -> stage_name)
+            status_id_to_name = {v: k for k, v in status_mapping.items()}
+
+            # Get current stage from entry values
+            current_stage = None
+            entry_values = entry.get("entry_values", {})
+            status_values = entry_values.get("status", [])
+            if status_values and len(status_values) > 0:
+                current_status_id = status_values[0].get("status")
+                current_stage = status_id_to_name.get(current_status_id)
+
+            # Validate stage transition (unless force=True or no current stage)
+            target_stage = stage.lower()
+            if current_stage and not force:
+                if not validate_stage_transition(current_stage, target_stage):
+                    allowed = VALID_STAGE_TRANSITIONS.get(current_stage, [])
+                    raise ToolError(
+                        f"Invalid stage transition: '{current_stage}' → '{target_stage}'. "
+                        f"Allowed transitions from '{current_stage}': {allowed}. "
+                        f"Use force=True to override."
+                    )
+
+            status_id = status_mapping.get(target_stage)
             if not status_id:
                 available_statuses = list(status_mapping.keys())
                 raise ToolError(
                     f"Stage '{stage}' not found in list configuration. "
                     f"Available statuses: {available_statuses}"
                 )
+
+            # Log the transition
+            log.info(
+                "pipeline_stage_transition",
+                record_id=record_id,
+                from_stage=current_stage,
+                to_stage=target_stage,
+                forced=force,
+                correlation_id=correlation_id,
+            )
 
             # Update using correct entry_values structure for status attributes
             response = await client.patch(
@@ -703,6 +801,14 @@ def register_attio_tools(mcp: FastMCP) -> None:
             )
 
             result = response.get("data")
+            # Add transition info to result
+            if result:
+                result["_transition"] = {
+                    "previous_stage": current_stage,
+                    "new_stage": target_stage,
+                    "forced": force,
+                }
+
             log_tool_result(tool_name, params, result, start_time, correlation_id)
             return result
 
@@ -722,6 +828,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
         activity_type: str,
         content: str,
         parent_object: str = "people",
+        metadata: dict | None = None,
     ) -> dict:
         """
         Add an activity/note to a record in Attio using the Notes API.
@@ -731,6 +838,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
             activity_type: Type of activity (note, email, call, meeting)
             content: Activity content/description
             parent_object: Object type the record belongs to (default: "people")
+            metadata: Optional metadata dict to include with the activity (e.g., email_subject, call_duration)
 
         Returns:
             Created note record
@@ -744,6 +852,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
             "activity_type": activity_type,
             "content": content[:100] + "..." if len(content) > 100 else content,
             "parent_object": parent_object,
+            "has_metadata": metadata is not None,
         }
         start_time = time.perf_counter()
         correlation_id = generate_correlation_id()
@@ -761,18 +870,38 @@ def register_attio_tools(mcp: FastMCP) -> None:
 
             content = validate_non_empty_string(content, "content")
 
+            # Validate metadata if provided
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ToolError("metadata must be a dictionary")
+
             client = _get_attio_client()
+
+            # Build title with metadata context if available
+            title = f"{activity_type.capitalize()}: Activity Log"
+            if metadata:
+                # Include key metadata in title for better searchability
+                if "subject" in metadata:
+                    title = f"{activity_type.capitalize()}: {metadata['subject']}"
+                elif "email_subject" in metadata:
+                    title = f"{activity_type.capitalize()}: {metadata['email_subject']}"
 
             # Use Attio Notes API (v2/notes) instead of non-existent /activities
             data: dict[str, Any] = {
                 "data": {
                     "parent_object": parent_object,
                     "parent_record_id": record_id.strip(),
-                    "title": f"{activity_type.capitalize()}: Activity Log",
+                    "title": title,
                     "format": "plaintext",
                     "content": content,
                 }
             }
+
+            # Append metadata to content as structured footer if provided
+            if metadata:
+                metadata_lines = [f"\n\n---\nMetadata:"]
+                for key, value in metadata.items():
+                    metadata_lines.append(f"  {key}: {value}")
+                data["data"]["content"] = content + "\n".join(metadata_lines)
 
             response = await client.post("/notes", correlation_id, json=data)
 
@@ -887,24 +1016,28 @@ def register_attio_tools(mcp: FastMCP) -> None:
     async def get_pipeline_records(
         stage: str | None = None,
         limit: int = 50,
+        offset: int = 0,
         list_id: str | None = None,
-    ) -> list[dict]:
+    ) -> dict:
         """
-        Get records from a pipeline/list.
+        Get records from a pipeline/list with pagination support.
 
         Args:
             stage: Optional stage to filter by (must be valid pipeline stage)
             limit: Maximum records to return (default 50, max 100)
+            offset: Number of records to skip for pagination (default 0)
             list_id: The pipeline/list ID (optional, uses ATTIO_PIPELINE_LIST_ID if not provided)
 
         Returns:
-            List of records in the pipeline
+            Dict with:
+                - data: List of records in the pipeline
+                - pagination: Dict with offset, limit, has_more, total (if available)
 
         Raises:
             ToolError: On validation or API errors
         """
         tool_name = "get_pipeline_records"
-        params = {"stage": stage, "limit": limit, "list_id": list_id}
+        params = {"stage": stage, "limit": limit, "offset": offset, "list_id": list_id}
         start_time = time.perf_counter()
         correlation_id = generate_correlation_id()
 
@@ -920,6 +1053,10 @@ def register_attio_tools(mcp: FastMCP) -> None:
             if not isinstance(limit, int) or limit < 1 or limit > 100:
                 raise ToolError("limit must be between 1 and 100")
 
+            # Validate offset
+            if not isinstance(offset, int) or offset < 0:
+                raise ToolError("offset must be a non-negative integer")
+
             # Get list ID
             pipeline_list_id = list_id or _get_pipeline_list_id()
             if not validate_list_id(pipeline_list_id):
@@ -927,7 +1064,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
 
             client = _get_attio_client()
 
-            query: dict[str, Any] = {"limit": limit}
+            query: dict[str, Any] = {"limit": limit, "offset": offset}
             if stage:
                 query["filter"] = {"stage": stage}
 
@@ -937,7 +1074,19 @@ def register_attio_tools(mcp: FastMCP) -> None:
                 json=query,
             )
 
-            result = response.get("data", [])
+            records = response.get("data", [])
+
+            # Build pagination response
+            result = {
+                "data": records,
+                "pagination": {
+                    "offset": offset,
+                    "limit": limit,
+                    "count": len(records),
+                    "has_more": len(records) == limit,  # Heuristic: if we got full page, there might be more
+                },
+            }
+
             log_tool_result(tool_name, params, result, start_time, correlation_id)
             return result
 
@@ -956,6 +1105,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
         record_id: str,
         limit: int = 20,
         parent_object: str = "people",
+        sort: str = "created_at:desc",
     ) -> list[dict]:
         """
         Get notes/activities for a record using the Attio Notes API.
@@ -964,6 +1114,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
             record_id: The record ID
             limit: Maximum notes to return (default 20, max 100)
             parent_object: Object type the record belongs to (default: "people")
+            sort: Sort order - "created_at:asc" or "created_at:desc" (default: "created_at:desc" for newest first)
 
         Returns:
             List of notes/activities for the record
@@ -972,7 +1123,7 @@ def register_attio_tools(mcp: FastMCP) -> None:
             ToolError: On validation or API errors
         """
         tool_name = "get_record_activities"
-        params = {"record_id": record_id, "limit": limit, "parent_object": parent_object}
+        params = {"record_id": record_id, "limit": limit, "parent_object": parent_object, "sort": sort}
         start_time = time.perf_counter()
         correlation_id = generate_correlation_id()
 
@@ -985,7 +1136,15 @@ def register_attio_tools(mcp: FastMCP) -> None:
             if not isinstance(limit, int) or limit < 1 or limit > 100:
                 raise ToolError("limit must be between 1 and 100")
 
+            # Validate sort parameter
+            valid_sorts = ["created_at:asc", "created_at:desc"]
+            if sort not in valid_sorts:
+                raise ToolError(f"Invalid sort: '{sort}'. Valid options: {valid_sorts}")
+
             client = _get_attio_client()
+
+            # Parse sort parameter
+            sort_field, sort_direction = sort.split(":")
 
             # Use GET /notes with query parameters instead of non-existent /activities/query
             response = await client.get(
@@ -995,10 +1154,75 @@ def register_attio_tools(mcp: FastMCP) -> None:
                     "parent_object": parent_object,
                     "parent_record_id": record_id.strip(),
                     "limit": limit,
+                    "sort_field": sort_field,
+                    "sort_direction": sort_direction,
                 },
             )
 
             result = response.get("data", [])
+            log_tool_result(tool_name, params, result, start_time, correlation_id)
+            return result
+
+        except ToolError:
+            raise
+        except Exception as e:
+            log_tool_error(tool_name, params, e, start_time, correlation_id)
+            raise _convert_to_tool_error(e) from e
+
+    # =========================================================================
+    # C3: Prefetch Pipeline Configuration
+    # =========================================================================
+
+    @mcp.tool()
+    async def prefetch_pipeline_config(
+        list_id: str | None = None,
+    ) -> dict:
+        """
+        Prefetch and cache pipeline configuration for faster subsequent operations.
+
+        Call this at startup or before batch operations to warm the cache.
+        Caches the status mapping (stage name -> status_id) for the pipeline.
+
+        Args:
+            list_id: The pipeline/list ID (optional, uses ATTIO_PIPELINE_LIST_ID if not provided)
+
+        Returns:
+            Dict with cached configuration info:
+                - list_id: The pipeline list ID
+                - stages: List of available stage names
+                - cached: Whether this was a cache hit or fresh fetch
+
+        Raises:
+            ToolError: On validation or API errors
+        """
+        tool_name = "prefetch_pipeline_config"
+        params = {"list_id": list_id}
+        start_time = time.perf_counter()
+        correlation_id = generate_correlation_id()
+
+        try:
+            # Get list ID
+            pipeline_list_id = list_id or _get_pipeline_list_id()
+            if not validate_list_id(pipeline_list_id):
+                raise ToolError("Invalid list_id format")
+
+            client = _get_attio_client()
+
+            # Check if already cached
+            was_cached = pipeline_list_id in _list_status_cache
+
+            # Fetch/refresh status mapping
+            status_mapping = await _get_list_status_mapping(
+                client, pipeline_list_id, correlation_id
+            )
+
+            result = {
+                "list_id": pipeline_list_id,
+                "stages": list(status_mapping.keys()),
+                "cached": was_cached,
+                "stage_count": len(status_mapping),
+            }
+
             log_tool_result(tool_name, params, result, start_time, correlation_id)
             return result
 
@@ -1019,5 +1243,6 @@ def register_attio_tools(mcp: FastMCP) -> None:
             "create_task",
             "get_pipeline_records",
             "get_record_activities",
+            "prefetch_pipeline_config",
         ],
     )
