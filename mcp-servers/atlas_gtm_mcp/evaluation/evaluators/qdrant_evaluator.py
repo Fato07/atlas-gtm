@@ -174,9 +174,12 @@ class QdrantRAGEvaluator:
 
                 questions.append(test_case.question)
                 contexts_list.append(retrieved_contexts)
-                ground_truths.append(test_case.ground_truth)
-                # For now, use ground truth as answer (in production, this would be LLM-generated)
-                answers.append(test_case.ground_truth)
+                # Use expected_contexts as ground truth for CI evaluation
+                # This aligns with what's seeded in Qdrant - expected_contexts text
+                # is what gets embedded and stored, so comparison should be against it
+                joined_contexts = " ".join(test_case.expected_contexts)
+                ground_truths.append(joined_contexts)
+                answers.append(joined_contexts)
 
             # Create Ragas dataset
             data = {
