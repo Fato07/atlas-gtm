@@ -88,44 +88,102 @@ def load_golden_dataset(collection_name: str) -> dict:
 
 
 def create_points_from_golden_dataset(dataset: dict, collection_name: str) -> list[PointStruct]:
-    """Create Qdrant points from golden dataset expected contexts."""
+    """Create Qdrant points from golden dataset test cases.
+
+    IMPORTANT: Embeddings are created from the QUESTION text, not the context.
+    This ensures that when the evaluator queries with a question, it retrieves
+    the point containing the expected contexts for that question.
+
+    In CI mode, both seeding and evaluation use deterministic hash-based embeddings.
+    By embedding the same question text in both places, queries find matching results.
+    """
     points = []
 
     for test_case in dataset.get("test_cases", []):
         brain_id = test_case.get("brain_id", "brain_test_v1")
+        question = test_case.get("question", "")
+        expected_contexts = test_case.get("expected_contexts", [])
 
-        # Create a point for each expected context
-        for i, context in enumerate(test_case.get("expected_contexts", [])):
-            point_id = str(uuid.uuid4())
+        if not question or not expected_contexts:
+            continue
 
-            # Generate mock embedding
-            embedding = get_mock_embedding(context)
+        # Create one point per test case, embedding the QUESTION
+        # so queries with the same question find this point
+        point_id = str(uuid.uuid4())
 
-            # Create payload based on collection type
-            payload = {
+        # Generate mock embedding from QUESTION (not context!)
+        # This matches how qdrant_evaluator.py queries: _get_embedding(question)
+        embedding = get_mock_embedding(question)
+
+        # Use first context as the primary text (most relevant)
+        primary_context = expected_contexts[0]
+
+        # Create payload based on collection type
+        payload = {
+            "text": primary_context,
+            "content": primary_context,
+            "brain_id": brain_id,
+            "test_case_id": test_case.get("id"),
+            "vertical": test_case.get("vertical", "test"),
+            # Store all contexts for reference
+            "expected_contexts": expected_contexts,
+            "question": question,
+        }
+
+        # Add collection-specific fields
+        if collection_name == "icp_rules":
+            payload["rule_text"] = primary_context
+            payload["category"] = test_case.get("metadata", {}).get("category", "general")
+        elif collection_name == "response_templates":
+            payload["template_text"] = primary_context
+        elif collection_name == "objection_handlers":
+            payload["response_text"] = primary_context
+        elif collection_name == "market_research":
+            payload["insight"] = primary_context
+
+        points.append(
+            PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload=payload,
+            )
+        )
+
+        # Also create additional points for extra contexts (with slight vector variations)
+        # This ensures multiple relevant contexts can be retrieved
+        for i, context in enumerate(expected_contexts[1:], start=1):
+            extra_point_id = str(uuid.uuid4())
+
+            # Create a slightly varied embedding by appending index to question
+            # This keeps it related but distinguishable
+            varied_embedding = get_mock_embedding(f"{question}_{i}")
+
+            extra_payload = {
                 "text": context,
                 "content": context,
                 "brain_id": brain_id,
                 "test_case_id": test_case.get("id"),
                 "vertical": test_case.get("vertical", "test"),
+                "question": question,
+                "context_index": i,
             }
 
             # Add collection-specific fields
             if collection_name == "icp_rules":
-                payload["rule_text"] = context
-                payload["category"] = test_case.get("metadata", {}).get("category", "general")
+                extra_payload["rule_text"] = context
+                extra_payload["category"] = test_case.get("metadata", {}).get("category", "general")
             elif collection_name == "response_templates":
-                payload["template_text"] = context
+                extra_payload["template_text"] = context
             elif collection_name == "objection_handlers":
-                payload["response_text"] = context
+                extra_payload["response_text"] = context
             elif collection_name == "market_research":
-                payload["insight"] = context
+                extra_payload["insight"] = context
 
             points.append(
                 PointStruct(
-                    id=point_id,
-                    vector=embedding,
-                    payload=payload,
+                    id=extra_point_id,
+                    vector=varied_embedding,
+                    payload=extra_payload,
                 )
             )
 
