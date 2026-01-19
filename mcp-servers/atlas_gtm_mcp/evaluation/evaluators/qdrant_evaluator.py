@@ -11,14 +11,14 @@ import asyncio
 
 try:
     from ragas import evaluate
-    from ragas.metrics import (
+    from ragas.metrics.collections import (
         ContextPrecision,
         ContextRecall,
         Faithfulness,
         AnswerRelevancy,
     )
-    from ragas.llms import LangchainLLMWrapper
-    from langchain_openai import ChatOpenAI
+    from ragas.llms import llm_factory
+    from openai import OpenAI as OpenAIClient
     from datasets import Dataset
 
     RAGAS_AVAILABLE = True
@@ -184,12 +184,9 @@ class QdrantRAGEvaluator:
             }
             dataset = Dataset.from_dict(data)
 
-            # Initialize LLM for Ragas metrics
-            llm = ChatOpenAI(
-                model=self.config.evaluator_model,
-                api_key=self.config.openai_api_key,
-            )
-            evaluator_llm = LangchainLLMWrapper(llm)
+            # Initialize LLM for Ragas metrics using llm_factory
+            client = OpenAIClient(api_key=self.config.openai_api_key)
+            evaluator_llm = llm_factory(self.config.evaluator_model, client=client)
 
             # Instantiate metrics with LLM
             ragas_metrics = [
