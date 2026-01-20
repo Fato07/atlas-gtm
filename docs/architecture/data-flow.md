@@ -1,8 +1,8 @@
 # Atlas GTM Data Flow Architecture
 
 > **Last Updated**: 2026-01-20
-> **Version**: 1.0
-> **Status**: Draft - Iterating with GTM expert
+> **Version**: 1.1
+> **Status**: Active - Meeting Prep Agent complete
 
 ---
 
@@ -11,12 +11,14 @@
 1. [Implementation Status](#implementation-status)
 2. [System Overview](#system-overview)
 3. [Overview Flow Diagram](#overview-flow-diagram)
-4. [Lead Scorer Flow](#lead-scorer-flow)
-5. [Reply Handler Flow](#reply-handler-flow)
-6. [Brain Lifecycle Flow](#brain-lifecycle-flow)
-7. [Component Architecture](#component-architecture)
-8. [Glossary](#glossary)
-9. [Change Log](#change-log)
+4. [Agent Communication Overview](#agent-communication-overview)
+5. [Lead Scorer Flow](#lead-scorer-flow)
+6. [Reply Handler Flow](#reply-handler-flow)
+7. [Meeting Prep Agent Flow](#meeting-prep-agent-flow)
+8. [Brain Lifecycle Flow](#brain-lifecycle-flow)
+9. [Component Architecture](#component-architecture)
+10. [Glossary](#glossary)
+11. [Change Log](#change-log)
 
 ---
 
@@ -30,7 +32,7 @@
 |-----------|--------|-----------|-------|
 | Lead Scorer Agent | ✅ | `004-lead-scorer` | Scoring, tiers, angles, Slack notifications |
 | Reply Handler Agent | ✅ | `006-reply-handler-agent` | Classification, KB matching, tier routing |
-| Meeting Prep Agent | 📋 | - | Pre-call briefs, context gathering |
+| Meeting Prep Agent | ✅ | `008-meeting-prep-agent` | Pre-call briefs, post-call analysis, Slack delivery |
 
 ### MCP Servers
 
@@ -38,7 +40,8 @@
 |-----------|--------|-----------|-------|
 | Qdrant MCP | ✅ | `002-qdrant-mcp` | KB queries, brain management |
 | Brain Lifecycle | ✅ | `003-brain-lifecycle` | Create, seed, activate brains |
-| Attio MCP | 🚧 | `007-attio-mcp-server` | CRM operations |
+| Attio MCP | ✅ | `007-attio-mcp-server` | CRM operations, pipeline management |
+| MCP REST API | ✅ | `008-meeting-prep-agent` | HTTP wrapper for MCP tools (:8100) |
 | Instantly MCP | 📋 | - | Email campaign integration |
 | LinkedIn MCP | 📋 | - | LinkedIn automation |
 
@@ -72,13 +75,17 @@ flowchart TB
     subgraph Entry["Entry Points"]
         WH_LS[/"Webhook: /score-lead"/]
         WH_RH[/"Webhook: /handle-reply"/]
+        WH_MP[/"Webhook: /meeting-prep<br/>(brief, analyze)"/]
+        CAL_WH[/"Calendar Webhook<br/>(30 min before)"/]
+        SLACK_CMD[/"Slack /brief Command"/]
         N8N_SCHED[("n8n Scheduled<br/>Batch Trigger")]
         INSTANTLY[/"Instantly Email<br/>Reply Webhook"/]
     end
 
-    subgraph Agents["AI Agents (TypeScript)"]
-        LS["Lead Scorer Agent<br/>Context: 80k tokens"]
-        RH["Reply Handler Agent<br/>Context: 60k tokens"]
+    subgraph Agents["AI Agents (TypeScript/Bun)"]
+        LS["Lead Scorer Agent<br/>Context: 80k tokens<br/>:3001"]
+        RH["Reply Handler Agent<br/>Context: 60k tokens<br/>:3002"]
+        MP["Meeting Prep Agent<br/>Context: 100k tokens<br/>:3003"]
     end
 
     subgraph Brain["Brain System (Qdrant)"]
@@ -86,17 +93,22 @@ flowchart TB
         KB[("Knowledge Base<br/>• ICP Rules<br/>• Templates<br/>• Objection Handlers<br/>• Market Research<br/>• Insights")]
     end
 
-    subgraph MCP["MCP Servers (Python FastMCP)"]
-        QDRANT_MCP["Qdrant MCP<br/>:8080"]
-        ATTIO_MCP["Attio MCP<br/>:8081"]
-        INSTANTLY_MCP["Instantly MCP<br/>:8082"]
+    subgraph MCPLayer["MCP Layer"]
+        MCP_REST["MCP REST API<br/>:8100"]
+        subgraph MCP["MCP Servers (Python FastMCP)"]
+            QDRANT_MCP["Qdrant MCP"]
+            ATTIO_MCP["Attio MCP"]
+            INSTANTLY_MCP["Instantly MCP"]
+        end
     end
 
     subgraph External["External Systems"]
         AIRTABLE[("Airtable<br/>Lead Database")]
         ATTIO[("Attio CRM")]
-        SLACK["Slack<br/>Approvals & Alerts"]
+        SLACK["Slack<br/>Approvals & Briefs"]
         EMAIL["Email<br/>(via Instantly)"]
+        REDIS[("Upstash Redis<br/>Research Cache")]
+        CLAUDE["Claude API"]
     end
 
     subgraph State["State Management"]
@@ -108,36 +120,45 @@ flowchart TB
     N8N_SCHED --> LS
     WH_RH --> RH
     INSTANTLY --> RH
+    WH_MP --> MP
+    CAL_WH --> MP
+    SLACK_CMD --> MP
 
     %% Agent to Brain
     LS --> BRAIN_SEL
     RH --> BRAIN_SEL
+    MP --> BRAIN_SEL
     BRAIN_SEL --> KB
 
-    %% KB queries via MCP
-    KB <-.-> QDRANT_MCP
+    %% KB queries via MCP REST
+    KB <-.-> MCP_REST
+    MCP_REST --> QDRANT_MCP
+    MCP_REST --> ATTIO_MCP
+    MCP_REST --> INSTANTLY_MCP
 
-    %% Agent to MCP
-    LS --> QDRANT_MCP
-    LS --> ATTIO_MCP
-    RH --> QDRANT_MCP
-    RH --> ATTIO_MCP
-    RH --> INSTANTLY_MCP
+    %% Agent to MCP REST
+    LS --> MCP_REST
+    RH --> MCP_REST
+    MP --> MCP_REST
 
     %% MCP to External
     ATTIO_MCP --> ATTIO
     INSTANTLY_MCP --> EMAIL
 
-    %% Agent to External (via n8n)
+    %% Agent to External (direct)
     LS --> AIRTABLE
     LS --> SLACK
     RH --> AIRTABLE
     RH --> SLACK
     RH --> EMAIL
+    MP --> SLACK
+    MP --> REDIS
+    MP --> CLAUDE
 
     %% State persistence
     LS --> STATE_FILE
     RH --> STATE_FILE
+    MP --> STATE_FILE
 
     %% Styling
     classDef entry fill:#e1f5fe,stroke:#01579b
@@ -146,12 +167,14 @@ flowchart TB
     classDef mcp fill:#e8f5e9,stroke:#2e7d32
     classDef external fill:#fce4ec,stroke:#880e4f
     classDef state fill:#fffde7,stroke:#f57f17
+    classDef rest fill:#bbdefb,stroke:#1976d2
 
-    class WH_LS,WH_RH,N8N_SCHED,INSTANTLY entry
-    class LS,RH agent
+    class WH_LS,WH_RH,WH_MP,CAL_WH,SLACK_CMD,N8N_SCHED,INSTANTLY entry
+    class LS,RH,MP agent
     class BRAIN_SEL,KB brain
     class QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP mcp
-    class AIRTABLE,ATTIO,SLACK,EMAIL external
+    class MCP_REST rest
+    class AIRTABLE,ATTIO,SLACK,EMAIL,REDIS,CLAUDE external
     class STATE_FILE state
 ```
 
@@ -162,6 +185,116 @@ flowchart TB
 | Webhook → Lead Scorer → KB → Airtable/Slack | Single lead scoring | ~100-500/day |
 | n8n Schedule → Lead Scorer → Batch Processing | Batch lead scoring | 50-100 per batch |
 | Instantly → Reply Handler → KB → Auto/Approval/Escalate | Reply processing | 100-500 replies/day |
+| Calendar → Meeting Prep → Brief → Slack | Pre-call brief generation | 5-20/day |
+| Transcript → Meeting Prep → Analysis → CRM | Post-call analysis with BANT | 5-20/day |
+
+---
+
+## Agent Communication Overview
+
+This section shows the unified architecture across all three agents, demonstrating how they share infrastructure while maintaining distinct responsibilities.
+
+```mermaid
+flowchart TB
+    subgraph Triggers["Entry Points"]
+        CAL[/"Calendar Webhook<br/>(30 min before)"/]
+        N8N[("n8n Scheduled")]
+        INST_WH[/"Instantly Reply<br/>Webhook"/]
+        MANUAL[/"Manual /brief<br/>Slack Command"/]
+        WH_SCORE[/"Score Lead<br/>Webhook"/]
+    end
+
+    subgraph Agents["AI Agents (TypeScript/Bun)"]
+        LS["Lead Scorer<br/>80k tokens<br/>:3001"]
+        RH["Reply Handler<br/>60k tokens<br/>:3002"]
+        MP["Meeting Prep<br/>100k tokens<br/>:3003"]
+    end
+
+    subgraph MCPLayer["MCP REST API (:8100)"]
+        REST["FastAPI Wrapper"]
+
+        subgraph Tools["MCP Tools"]
+            QDRANT_T["Qdrant Tools<br/>• query_kb<br/>• get_brain<br/>• add_insight"]
+            ATTIO_T["Attio Tools<br/>• find_person<br/>• update_person<br/>• create_task"]
+            INST_T["Instantly Tools<br/>• get_threads<br/>• send_reply"]
+        end
+    end
+
+    subgraph Data["Data Layer"]
+        QDRANT[("Qdrant<br/>Vector KB<br/>:6333")]
+        REDIS[("Upstash Redis<br/>Research Cache<br/>24h TTL")]
+    end
+
+    subgraph External["External Services"]
+        ATTIO[("Attio CRM")]
+        AIRTABLE[("Airtable")]
+        SLACK["Slack<br/>Block Kit"]
+        INSTANTLY["Instantly Email"]
+        CLAUDE["Claude API"]
+    end
+
+    %% Trigger connections
+    WH_SCORE --> LS
+    N8N --> LS
+    INST_WH --> RH
+    CAL --> MP
+    MANUAL --> MP
+
+    %% Agent to MCP REST
+    LS --> REST
+    RH --> REST
+    MP --> REST
+
+    %% MCP REST to Tools
+    REST --> QDRANT_T
+    REST --> ATTIO_T
+    REST --> INST_T
+
+    %% Tools to Data/External
+    QDRANT_T --> QDRANT
+    ATTIO_T --> ATTIO
+    INST_T --> INSTANTLY
+
+    %% Direct connections
+    LS --> AIRTABLE
+    LS --> SLACK
+    RH --> AIRTABLE
+    RH --> SLACK
+    MP --> SLACK
+    MP --> REDIS
+    MP --> CLAUDE
+
+    %% Styling
+    classDef trigger fill:#e1f5fe,stroke:#01579b
+    classDef agent fill:#fff3e0,stroke:#e65100
+    classDef mcp fill:#bbdefb,stroke:#1976d2
+    classDef tool fill:#e8f5e9,stroke:#2e7d32
+    classDef data fill:#f3e5f5,stroke:#7b1fa2
+    classDef external fill:#fce4ec,stroke:#880e4f
+
+    class CAL,N8N,INST_WH,MANUAL,WH_SCORE trigger
+    class LS,RH,MP agent
+    class REST mcp
+    class QDRANT_T,ATTIO_T,INST_T tool
+    class QDRANT,REDIS data
+    class ATTIO,AIRTABLE,SLACK,INSTANTLY,CLAUDE external
+```
+
+### Agent Responsibilities Matrix
+
+| Agent | Primary Function | Context Budget | Key Outputs |
+|-------|-----------------|----------------|-------------|
+| **Lead Scorer** | Score leads against ICP rules | 80k tokens | Score, tier, messaging angle |
+| **Reply Handler** | Classify & respond to emails | 60k tokens | Auto-reply, approval request, escalation |
+| **Meeting Prep** | Pre-call briefs & post-call analysis | 100k tokens | Slack brief, BANT score, CRM updates |
+
+### Shared Infrastructure
+
+All agents share:
+- **MCP REST API** (:8100) - HTTP wrapper for tool access
+- **Qdrant KB** - Brain-scoped knowledge base queries
+- **State files** - Session checkpoints for resumability
+- **Slack delivery** - Consistent Block Kit formatting
 
 ---
 
@@ -435,6 +568,161 @@ flowchart TD
 
 ---
 
+## Meeting Prep Agent Flow
+
+The Meeting Prep Agent generates pre-call briefs 30 minutes before scheduled meetings and performs post-call analysis on transcripts. It uses a modular sub-agent architecture for parallel data gathering.
+
+### Brief Generation Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CAL as Calendar/Manual
+    participant WH as Webhook Handler
+    participant MP as Meeting Prep Agent
+    participant CG as Context Gatherer
+    participant SUB as Sub-Agents (4x)
+    participant MCP as MCP REST API
+    participant CACHE as Redis Cache
+    participant CLAUDE as Claude API
+    participant SLACK as Slack
+
+    %% Entry
+    CAL->>WH: POST /webhook/meeting-prep/brief
+    WH->>WH: Validate X-Webhook-Secret
+    WH->>MP: Process meeting request
+
+    MP->>CG: Gather context (parallel)
+
+    par Instantly Fetcher
+        CG->>MCP: POST /tools/get_email_threads
+        MCP-->>CG: Email history
+    and Airtable Fetcher
+        CG->>MCP: POST /tools/get_lead
+        MCP-->>CG: Lead profile
+    and Attio Fetcher
+        CG->>MCP: POST /tools/find_person
+        MCP-->>CG: CRM data
+    and KB Researcher
+        CG->>MCP: POST /tools/query_kb
+        MCP-->>CG: Objection handlers, similar deals
+    end
+
+    CG->>CACHE: Check company cache (24h TTL)
+    CACHE-->>CG: Cache hit/miss
+
+    CG-->>MP: GatheredContext
+
+    MP->>CLAUDE: Generate brief (structured output)
+    CLAUDE-->>MP: BriefContent
+
+    MP->>SLACK: Post Block Kit message
+    SLACK-->>MP: Delivery confirmation
+
+    MP-->>WH: Success response
+```
+
+### Post-Meeting Analysis Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TR as Transcript Source
+    participant WH as Webhook Handler
+    participant TA as Transcript Analyzer
+    participant CLAUDE as Claude API
+    participant CRM as CRM Updater
+    participant MCP as MCP REST API
+
+    %% Entry
+    TR->>WH: POST /webhook/meeting-prep/analyze
+    WH->>WH: Validate X-Webhook-Secret
+    WH->>TA: Analyze transcript
+
+    TA->>CLAUDE: Extract BANT + insights
+    Note over CLAUDE: Budget, Authority,<br/>Need, Timeline scoring
+
+    CLAUDE-->>TA: MeetingAnalysis
+
+    TA->>TA: Calculate BANT score (0-100)
+    TA->>TA: Generate recommendation<br/>(proceed/nurture/disqualify)
+
+    TA->>CRM: Update CRM records
+    CRM->>MCP: POST /tools/update_person
+    CRM->>MCP: POST /tools/create_task
+
+    TA-->>WH: Analysis result
+```
+
+### Brief Content Structure
+
+The pre-call brief includes:
+
+| Section | Content | Source |
+|---------|---------|--------|
+| **Lead Summary** | Name, company, role, ICP score | Airtable, Lead Scorer |
+| **Conversation History** | Recent email threads, sentiment | Instantly |
+| **Company Context** | Size, industry, tech stack | Attio, Research cache |
+| **Similar Deals** | Past wins with similar profiles | KB (brain-scoped) |
+| **Objection Prep** | Likely concerns + handler strategies | KB (brain-scoped) |
+| **Suggested Agenda** | Talking points, questions to ask | Claude-generated |
+
+### BANT Scoring
+
+| Dimension | Weight | Signals |
+|-----------|--------|---------|
+| **Budget** | 25% | Explicit budget mention, funding status, org size |
+| **Authority** | 25% | Decision-maker role, buying process clarity |
+| **Need** | 25% | Pain point urgency, timeline pressure, current solution gaps |
+| **Timeline** | 25% | Explicit dates, urgency language, project deadlines |
+
+### Key Components
+
+| Component | Responsibility |
+|-----------|---------------|
+| **Webhook Handler** | HTTP entry point, secret validation, request routing |
+| **Context Gatherer** | Parallel sub-agent orchestration, cache management |
+| **Brief Generator** | Claude-powered brief synthesis from gathered context |
+| **Transcript Analyzer** | BANT extraction, scoring, recommendation generation |
+| **Slack Delivery** | Block Kit formatting, channel routing |
+| **CRM Updater** | Attio sync after analysis |
+
+### Error Handling
+
+```mermaid
+flowchart TD
+    REQ[/"Incoming Request"/] --> VALIDATE{"Valid<br/>Secret?"}
+    VALIDATE -->|No| REJECT["401 Unauthorized"]
+    VALIDATE -->|Yes| GATHER["Gather Context"]
+
+    GATHER --> CHECK{"All Sub-Agents<br/>Succeeded?"}
+    CHECK -->|Yes| GENERATE["Generate Brief"]
+    CHECK -->|Partial| FALLBACK["Use Available Data<br/>+ Mark Incomplete"]
+    CHECK -->|Fail| RETRY{"Retry<br/>Count < 3?"}
+
+    RETRY -->|Yes| GATHER
+    RETRY -->|No| NOTIFY["Slack Error Alert"]
+
+    FALLBACK --> GENERATE
+    GENERATE --> DELIVER["Deliver to Slack"]
+
+    DELIVER --> SUCCESS{"Delivery<br/>OK?"}
+    SUCCESS -->|Yes| DONE[/"Brief Delivered"/]
+    SUCCESS -->|No| NOTIFY
+
+    NOTIFY --> DONE_ERR[/"Error Logged"/]
+
+    classDef error fill:#ffcdd2,stroke:#b71c1c
+    classDef success fill:#c8e6c9,stroke:#2e7d32
+    classDef decision fill:#fff9c4,stroke:#f57f17
+
+    class REJECT,NOTIFY,DONE_ERR error
+    class DONE success
+    class VALIDATE,CHECK,RETRY,SUCCESS decision
+```
+
+---
+
 ## Brain Lifecycle Flow
 
 ### Sequence Diagram
@@ -618,12 +906,16 @@ flowchart TB
         subgraph DataLayer["Data Layer"]
             QDRANT[("Qdrant<br/>:6333")]
             POSTGRES[("PostgreSQL<br/>n8n metadata")]
+            REDIS[("Upstash Redis<br/>Research Cache")]
         end
 
-        subgraph MCPServers["MCP Servers (Python FastMCP)"]
-            QDRANT_MCP["Qdrant MCP<br/>:8080"]
-            ATTIO_MCP["Attio MCP<br/>:8081"]
-            INSTANTLY_MCP["Instantly MCP<br/>:8082"]
+        subgraph MCPLayer["MCP Layer"]
+            MCP_REST["MCP REST API<br/>:8100"]
+            subgraph MCPServers["MCP Servers (Python FastMCP)"]
+                QDRANT_MCP["Qdrant MCP"]
+                ATTIO_MCP["Attio MCP"]
+                INSTANTLY_MCP["Instantly MCP"]
+            end
         end
 
         subgraph Orchestration["Workflow Orchestration"]
@@ -633,9 +925,9 @@ flowchart TB
 
     subgraph Application["Application Layer (TypeScript/Bun)"]
         subgraph Agents["AI Agents"]
-            LEAD_SCORER["Lead Scorer<br/>80k context"]
-            REPLY_HANDLER["Reply Handler<br/>60k context"]
-            MEETING_PREP["Meeting Prep<br/>100k context"]
+            LEAD_SCORER["Lead Scorer<br/>80k context<br/>:3001"]
+            REPLY_HANDLER["Reply Handler<br/>60k context<br/>:3002"]
+            MEETING_PREP["Meeting Prep<br/>100k context<br/>:3003"]
         end
 
         subgraph Lib["Shared Libraries"]
@@ -649,26 +941,32 @@ flowchart TB
     subgraph StateFiles["State Persistence"]
         LS_STATE[/"lead-scorer-state.json"/]
         RH_STATE[/"reply-handler-state.json"/]
+        MP_STATE[/"meeting-prep-state.json"/]
     end
 
     %% Connections
     Agents --> Lib
-    Agents --> MCPServers
+    Agents --> MCP_REST
+    MCP_REST --> MCPServers
     Agents --> StateFiles
     MCPServers --> DataLayer
     MCPServers --> External
     Orchestration --> Agents
     QDRANT_MCP --> VOYAGE
+    MEETING_PREP --> REDIS
+    MEETING_PREP --> CLAUDE
 
     classDef external fill:#fce4ec,stroke:#880e4f
     classDef infra fill:#e8f5e9,stroke:#2e7d32
     classDef app fill:#fff3e0,stroke:#e65100
     classDef state fill:#fffde7,stroke:#f57f17
+    classDef rest fill:#bbdefb,stroke:#1976d2
 
     class AIRTABLE,ATTIO,SLACK,INSTANTLY,VOYAGE,CLAUDE external
-    class QDRANT,POSTGRES,QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP,N8N infra
+    class QDRANT,POSTGRES,REDIS,QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP,N8N infra
+    class MCP_REST rest
     class LEAD_SCORER,REPLY_HANDLER,MEETING_PREP,TYPES,QDRANT_CLIENT,STATE,EMBEDDINGS app
-    class LS_STATE,RH_STATE state
+    class LS_STATE,RH_STATE,MP_STATE state
 ```
 
 ### MCP Server Topology
@@ -677,16 +975,26 @@ flowchart TB
 
 ```mermaid
 flowchart LR
+    subgraph Agents["AI Agents (TypeScript/Bun)"]
+        LS["Lead Scorer<br/>:3001"]
+        RH["Reply Handler<br/>:3002"]
+        MP["Meeting Prep<br/>:3003"]
+    end
+
+    subgraph REST["MCP REST API Layer"]
+        API["FastAPI Wrapper<br/>:8100"]
+    end
+
     subgraph Custom["Custom Build (VPS - Python FastMCP)"]
-        QD_MCP["Qdrant MCP<br/>:8080"]
-        ATTIO_MCP["Attio MCP<br/>:8081"]
-        INST_MCP["Instantly MCP<br/>:8082"]
-        SLACK_MCP["Slack MCP<br/>:8084"]
-        LI_MCP["LinkedIn MCP<br/>:8083"]
+        QD_MCP["Qdrant MCP"]
+        ATTIO_MCP["Attio MCP"]
+        INST_MCP["Instantly MCP"]
+        SLACK_MCP["Slack MCP"]
+        LI_MCP["LinkedIn MCP"]
     end
 
     subgraph DirectSDK["Direct SDK (TypeScript)"]
-        SLACK_SDK["@slack/web-api<br/>(modals only)"]
+        SLACK_SDK["@slack/web-api<br/>(Block Kit delivery)"]
     end
 
     subgraph N8N_INT["n8n Integrations (nodes)"]
@@ -699,9 +1007,10 @@ flowchart LR
         WF_MCP["Complex Workflows<br/>as Tools"]
     end
 
-    AGENT["AI Agent"] --> Custom
-    AGENT --> DirectSDK
-    AGENT --> N8N_MCP
+    Agents --> API
+    Agents --> DirectSDK
+    Agents --> N8N_MCP
+    API --> Custom
 
     QD_MCP --> QDRANT[("Qdrant")]
     ATTIO_MCP --> ATTIO[("Attio CRM")]
@@ -717,17 +1026,22 @@ flowchart LR
 
 | Term | Definition |
 |------|------------|
+| **BANT** | Budget, Authority, Need, Timeline - framework for qualifying sales leads. Meeting Prep Agent extracts and scores these dimensions. |
 | **Brain** | A vertical-specific knowledge base containing ICP rules, templates, handlers, and research. The "swappable" component that gives agents domain expertise. |
 | **brain_id** | Unique identifier for a brain (format: `brain_{vertical}_{timestamp}`). MUST be included in all KB queries. |
-| **Vertical** | A market segment (e.g., "iro" = Investor Relations Operations, "defense" = Defense Contractors). |
-| **Tier** | Routing classification: Tier 1 (auto-action), Tier 2 (approval needed), Tier 3 (human only). |
+| **Brief** | Pre-call preparation document generated by Meeting Prep Agent, delivered via Slack Block Kit. |
+| **Context Gatherer** | Component that orchestrates parallel sub-agent calls to collect meeting context from multiple sources. |
 | **ICP Rule** | Ideal Customer Profile scoring criterion defining an attribute, condition, and score weight. |
-| **MCP** | Model Context Protocol - standard for AI agents to interact with external tools. |
+| **Insight** | Learning extracted from conversations, stored in KB with quality gates. |
 | **Knockout Rule** | An ICP rule that, if failed, immediately disqualifies a lead (score = 0). |
+| **MCP** | Model Context Protocol - standard for AI agents to interact with external tools. |
+| **MCP REST API** | HTTP wrapper (:8100) that enables TypeScript agents to call Python MCP tools via REST endpoints. |
 | **Brain-Scoped Query** | A query to Qdrant that includes `brain_id` filter to ensure vertical-specific results. |
 | **State File** | JSON file (`state/*.json`) storing session checkpoints for resumable operations. |
 | **Sub-Agent** | Pattern where main agent spawns isolated agent for data gathering (returns distilled results). |
-| **Insight** | Learning extracted from conversations, stored in KB with quality gates. |
+| **Tier** | Routing classification: Tier 1 (auto-action), Tier 2 (approval needed), Tier 3 (human only). |
+| **Transcript Analyzer** | Component that extracts BANT signals and generates recommendations from meeting transcripts. |
+| **Vertical** | A market segment (e.g., "iro" = Investor Relations Operations, "defense" = Defense Contractors). |
 
 ---
 
@@ -735,6 +1049,7 @@ flowchart LR
 
 | Date | Version | Changes | Author |
 |------|---------|---------|--------|
+| 2026-01-20 | 1.1 | Added Meeting Prep Agent flow, Agent Communication Overview, updated status tables, MCP REST API layer | Atlas GTM Team |
 | 2026-01-20 | 1.0 | Initial data flow documentation with status markers | Atlas GTM Team |
 
 ---
@@ -769,10 +1084,10 @@ flowchart LR
 ## Next Steps
 
 - [ ] Review with GTM expert
-- [ ] Add Meeting Prep agent flow (when implemented)
-- [ ] Add error handling paths
+- [x] Add Meeting Prep agent flow ✅
+- [x] Add error handling paths (Meeting Prep has retry/fallback documented) ✅
 - [ ] Add monitoring/observability touchpoints
-- [ ] Document retry/fallback patterns
+- [ ] Document retry/fallback patterns for Lead Scorer and Reply Handler
 
 ---
 
