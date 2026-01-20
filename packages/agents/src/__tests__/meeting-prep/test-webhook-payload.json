@@ -1,0 +1,49 @@
+{
+  "event_type": "meeting_reminder",
+  "brain_id": "brain_saas_test",
+  "trigger_time": "2024-01-20T09:30:00Z",
+  "event": {
+    "event_id": "test-event-12345",
+    "summary": "Discovery Call - Acme Corp",
+    "description": "Initial discovery call with John Smith from Acme Corp to discuss their DevOps needs and potential fit for our platform.",
+    "start": {
+      "dateTime": "2024-01-20T10:00:00Z",
+      "timeZone": "UTC"
+    },
+    "end": {
+      "dateTime": "2024-01-20T10:30:00Z",
+      "timeZone": "UTC"
+    },
+    "attendees": [
+      {
+        "email": "fathin@codesdevs.com",
+        "name": "Fathin Dosunmu",
+        "response_status": "accepted",
+        "is_organizer": true
+      },
+      {
+        "email": "john.smith@acme-corp.com",
+        "name": "John Smith",
+        "response_status": "accepted",
+        "is_organizer": false
+      },
+      {
+        "email": "sarah.jones@acme-corp.com",
+        "name": "Sarah Jones",
+        "response_status": "tentative",
+        "is_organizer": false
+      }
+    ],
+    "hangoutLink": "https://meet.google.com/abc-defg-hij",
+    "conferenceData": {
+      "entryPoints": [
+        {
+          "entryPointType": "video",
+          "uri": "https://meet.google.com/abc-defg-hij"
+        }
+      ]
+    },
+    "status": "confirmed",
+    "recurringEventId": null
+  }
+}
