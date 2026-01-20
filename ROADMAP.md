@@ -69,7 +69,7 @@ Infrastructure deployed, Knowledge Base seeded with IRO brain, first MCP connect
 | Tue | Create Qdrant collections | Schema implemented |
 | Tue | Integrate Voyage AI embeddings | Embedding pipeline |
 | Wed | Build Qdrant MCP server | MCP responding |
-| Wed | Connect Composio (Airtable, Slack) | MCPs connected |
+| Wed | Build custom Slack MCP + n8n Airtable | MCPs connected |
 | Thu | Seed KB with IRO brain content | Brain populated |
 | Fri | Test queries, fix issues | E2E query working |
 
@@ -83,7 +83,7 @@ Infrastructure deployed, Knowledge Base seeded with IRO brain, first MCP connect
   - 10+ handlers
   - 20+ research docs
 ✓ Can query KB via MCP and get relevant results
-✓ Composio connected: Airtable, Slack
+✓ Custom Slack MCP + n8n Airtable node (Composio rejected - ADR-002)
 ✓ n8n can call MCPs
 ```
 
@@ -428,7 +428,7 @@ Second vertical brain seeded, security layer finalized, all operational layers c
 | Risk | Mitigation | Fallback |
 |------|------------|----------|
 | Qdrant performance issues | Pre-test with expected load | Use Qdrant Cloud |
-| MCP complexity | Start with Composio where possible | Direct API if needed |
+| MCP complexity | Custom FastMCP servers (ADR-002) | n8n nodes for simple CRUD |
 | Claude accuracy | Extensive prompt testing | Human review for edge cases |
 | Instantly webhook delays | Implement retry logic | Poll as backup |
 | Langfuse latency impact | Async tracing, batch flush | Disable in hot path |
@@ -462,7 +462,7 @@ Second vertical brain seeded, security layer finalized, all operational layers c
 | Attio | $29 | |
 | Instantly | $37-97 | |
 | LinkedIn tool | $50-100 | |
-| Composio | $0-20 | |
+| ~~Composio~~ | ~~$0-20~~ | Rejected (ADR-002) - using custom MCPs |
 | **Langfuse** ★ | **$0** | Free tier (50k observations/mo) |
 | **OpenAI (Ragas)** ★ | **$5-10** | Evaluator LLM (gpt-4o-mini) |
 | **Lakera Guard** ★ | **$0** | Free tier (10k requests/mo) |

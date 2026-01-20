@@ -20,7 +20,7 @@ Atlas GTM is an AI-first GTM Operations System for CodesDevs. It uses swappable 
 
 ### 2. Tech Stack
 - Runtime: Bun (not npm/node)
-- Agents: TypeScript with @anthropic-ai/sdk
+- Agents: TypeScript with @anthropic-ai/sdk, -> https://github.com/anthropics/anthropic-sdk-typescript?tab=readme-ov-file
 - MCP Servers: Python with FastMCP
 - Vector DB: Qdrant
 - Caching: Upstash Redis (serverless)
@@ -39,6 +39,7 @@ Atlas GTM is an AI-first GTM Operations System for CodesDevs. It uses swappable 
 | n8n | `/n8n-io/n8n-docs` | Workflow nodes, webhook configuration |
 | FastMCP | `/websites/gofastmcp` | MCP server patterns, tool decorators, deployment |
 | Bun | `/oven-sh/bun` | Runtime APIs, test runner, package management |
+| @anthropic-ai/sdk | The full API of this library can be found in https://github.com/anthropics/anthropic-sdk-typescript/blob/main/api.md 
 
 **Workflow**:
 1. Before implementing: `resolve-library-id` → `get-library-docs` with specific query
@@ -160,6 +161,37 @@ mcp-servers/               # Python MCP servers
     └── instantly/         # Email tools
 ```
 
+## Architecture Documentation
+
+See `docs/architecture/data-flow.md` for comprehensive system data flow diagrams.
+
+**When to consult**: Before implementing new agents, MCP tools, or integration points.
+
+**When to update**: After completing a feature that changes data flow. Follow the maintenance instructions in the doc.
+
+### Implementation Status Summary
+
+> **Legend**: ✅ Implemented | 🚧 In Progress | 📋 Planned
+
+| Component | Status | Branch |
+|-----------|--------|--------|
+| Lead Scorer Agent | ✅ | `004-lead-scorer` |
+| Reply Handler Agent | ✅ | `006-reply-handler-agent` |
+| Qdrant MCP Server | ✅ | `002-qdrant-mcp` |
+| Brain Lifecycle | ✅ | `003-brain-lifecycle` |
+| Attio MCP Server | 🚧 | `007-attio-mcp-server` |
+| Meeting Prep Agent | 📋 | - |
+| Instantly MCP Server | 📋 | - |
+| LinkedIn MCP Server | 📋 | - |
+
+### Self-Updating Instructions
+
+When completing a feature that affects data flow:
+1. Read `docs/architecture/data-flow.md`
+2. Update relevant diagrams if data flow changed
+3. Update Implementation Status tables in both files
+4. Add entry to Change Log in data-flow.md
+
 ## MCP Server Development
 
 MCP servers are Python (FastMCP). When adding tools:
@@ -219,6 +251,8 @@ bun run seed:brain --vertical=fintech --source=./data/fintech-kb.json
 - Lead Scorer Agent: 80k token budget, brain-scoped queries, sub-agent isolation for CRM enrichment (004-lead-scorer)
 - Webhook API: POST /webhook/score-lead with X-Webhook-Secret authentication (004-lead-scorer)
 - Structured logging: lead_scored, scoring_failed, rule_evaluated events (004-lead-scorer)
+- TypeScript 5.4+ (Bun runtime) for agent, Python 3.11+ for MCP extensions + @anthropic-ai/sdk, @qdrant/js-client-rest, @slack/web-api, structlog, Zod (006-reply-handler-agent)
+- Qdrant (KB vectors), Airtable (lead status), Attio (CRM), state/reply-handler-state.json (session state) (006-reply-handler-agent)
 
 ## Recent Changes
 - 001-gtm-infra: Added TypeScript 5.4+ (Bun runtime), Python 3.11+ (MCP servers) + @qdrant/js-client-rest, voyageai (Python), Docker Compose v2

@@ -482,18 +482,20 @@ See `specs/context-engineering.md` for full implementation details.
 
 ## MCP Integration Topology
 
-```
-COMPOSIO MANAGED (Use their infrastructure):
-├─ airtable-mcp ──── Lead database CRUD
-├─ slack-mcp ─────── Notifications, approvals
-├─ google-calendar ─ Meeting triggers
-└─ gmail-mcp ─────── Email context (if needed)
+> **Decision**: Custom MCP servers over Composio - see [ADR-002](docs/adr/002-composio-mcp-decision.md)
 
-CUSTOM BUILD (Your VPS):
-├─ attio-mcp ─────── CRM operations (no official exists)
-├─ instantly-mcp ─── Email campaign data (no official)
+```
+CUSTOM BUILD (Your VPS - Python FastMCP):
 ├─ qdrant-mcp ────── Knowledge Base queries
-└─ linkedin-mcp ──── Depends on tool choice (Heyreach/GojiRyte/Aimfox) - Decicded to use aimfox, so adjust project requirements accordingly.
+├─ attio-mcp ─────── CRM operations
+├─ instantly-mcp ─── Email campaign data
+├─ slack-mcp ─────── Notifications, approvals (custom + direct SDK for modals)
+└─ linkedin-mcp ──── LinkedIn automation (Aimfox)
+
+n8n INTEGRATIONS (via n8n nodes, not MCP):
+├─ Airtable ──────── Lead database CRUD
+├─ Google Calendar ─ Meeting triggers
+└─ Gmail ─────────── Email context (if needed)
 
 n8n AS MCP SERVER:
 └─ Expose complex workflows as MCP tools
