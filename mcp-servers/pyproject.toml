@@ -1,7 +1,7 @@
 [project]
 name = "atlas-gtm-mcp"
 version = "0.1.0"
-description = "MCP servers for Atlas GTM - Qdrant, Attio, Instantly integrations"
+description = "MCP servers for Atlas GTM - Qdrant, Attio, Instantly, HeyReach integrations"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

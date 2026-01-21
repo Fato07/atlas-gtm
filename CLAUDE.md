@@ -176,8 +176,9 @@ packages/
 mcp-servers/               # Python MCP servers
 └── atlas_gtm_mcp/
     ├── qdrant/            # KB tools
-    ├── attio/             # CRM tools
-    └── instantly/         # Email tools
+    ├── attio/             # CRM tools (Attio CRM API)
+    ├── instantly/         # Email outreach tools (Instantly.ai v2 API, 38 tools)
+    └── heyreach/          # LinkedIn automation tools (HeyReach API, 35 tools)
 ```
 
 ## Architecture Documentation
@@ -201,8 +202,8 @@ See `docs/architecture/data-flow.md` for comprehensive system data flow diagrams
 | Qdrant MCP Server | ✅ | `002-qdrant-mcp` |
 | Brain Lifecycle | ✅ | `003-brain-lifecycle` |
 | Attio MCP Server | ✅ | `007-attio-mcp-server` |
-| Instantly MCP Server | 📋 | - |
-| LinkedIn MCP Server | 📋 | - |
+| Instantly MCP Server | ✅ | `011-instantly-mcp-upgrade` |
+| HeyReach MCP Server | ✅ | `012-heyreach-mcp-server` |
 
 ### Self-Updating Instructions
 
@@ -285,8 +286,16 @@ bun run seed:brain --vertical=fintech --source=./data/fintech-kb.json
 - Qdrant (insights collection - existing schema), Upstash Redis (validation queue state) (010-learning-loop)
 - TypeScript 5.4+ (Bun runtime) + @anthropic-ai/sdk ^0.30.0, Zod 3.x, zod-to-json-schema (009-structured-outputs-refactor)
 - N/A (refactor only - no storage changes) (009-structured-outputs-refactor)
+- Python 3.11+ + FastMCP ≥0.4.0, httpx, tenacity, structlog, pydantic ≥2.7.0 (011-instantly-mcp-upgrade)
+- Instantly.ai v2 API (api.instantly.ai/api/v2) - 38 tools: accounts (5), campaigns (8), leads (10), emails (8), analytics (4), background jobs (3). Features: X-API-KEY auth, retry with exponential backoff, structured logging. (011-instantly-mcp-upgrade)
+- Python 3.11+ + FastMCP ≥0.4.0, httpx, tenacity, structlog, pydantic ≥2.7.0 (012-heyreach-mcp-server)
+- HeyReach API (api.heyreach.io/api/public) - 35 tools: authentication (1), campaigns (7), inbox/messages (6), accounts (4), lists (8), leads (5), stats (2), webhooks (2). Features: X-API-KEY auth, 300 req/min rate limit, retry with exponential backoff, structured logging. (012-heyreach-mcp-server)
+- N/A (External: Instantly.ai v2 API at `api.instantly.ai/api/v2`) (011-instantly-mcp-upgrade)
+- Python 3.11+ + FastMCP ≥0.4.0, httpx ≥0.27.0, tenacity ≥8.2.0, pydantic ≥2.7.0, structlog ≥24.1.0 (012-heyreach-mcp-server)
+- N/A (stateless MCP server - data stored in HeyReach SaaS) (012-heyreach-mcp-server)
 
 ## Recent Changes
+- 011-instantly-mcp-upgrade + 012-heyreach-mcp-server: Production-ready MCP servers for email outreach (Instantly v2 API) and LinkedIn automation (HeyReach API). Instantly upgraded from 7 to 38 tools with v2 API, retry logic (tenacity), and structured logging. HeyReach new implementation with 35 tools for campaigns, inbox, accounts, lists, leads, stats, and webhooks. Both have comprehensive test suites (164 tests total).
 - 009-structured-outputs-refactor: Migrated Lead Scorer and Reply Handler agents to use Anthropic SDK structured outputs via tool use pattern. Replaced fragile regex JSON extraction with type-safe `buildTool()` → `forceToolChoice()` → `extractToolResult()` → `TOOL.parse()` flow. Added JSDoc examples to lib utilities. 38.8% code reduction in implementation files. All 817 tests pass.
 - 010-learning-loop: Automated insight extraction from email replies and call transcripts. Quality gates (confidence, duplicate, importance). Slack-based validation queue for human review. KB write with provenance tracking. Weekly synthesis reports. Template A/B performance tracking.
 - 008-meeting-prep-agent: Pre-call brief generation (30 min before meetings) and post-call transcript analysis with BANT scoring. Modular architecture with sub-agents for Instantly/Airtable/Attio/KB. Slack Block Kit delivery. Manual request via `/brief` command. Error handling with retry.
