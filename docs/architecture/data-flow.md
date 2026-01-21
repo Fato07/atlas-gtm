@@ -1,8 +1,8 @@
 # Atlas GTM Data Flow Architecture
 
 > **Last Updated**: 2026-01-21
-> **Version**: 1.3
-> **Status**: Active - Instantly MCP Server upgraded (38 tools)
+> **Version**: 1.4
+> **Status**: Active - HeyReach MCP Server added (35 tools)
 
 ---
 
@@ -45,7 +45,7 @@
 | Attio MCP | ✅ | `007-attio-mcp-server` | CRM operations, pipeline management |
 | MCP REST API | ✅ | `008-meeting-prep-agent` | HTTP wrapper for MCP tools (:8100) |
 | Instantly MCP | ✅ | `011-instantly-mcp-upgrade` | 38 tools: campaigns, leads, emails, accounts, analytics, jobs |
-| LinkedIn MCP | 📋 | - | LinkedIn automation |
+| HeyReach MCP | ✅ | `012-heyreach-mcp-server` | 35 tools: campaigns, inbox, accounts, lists, leads, stats, webhooks |
 
 ### Infrastructure
 
@@ -105,6 +105,7 @@ flowchart TB
             QDRANT_MCP["Qdrant MCP"]
             ATTIO_MCP["Attio MCP"]
             INSTANTLY_MCP["Instantly MCP"]
+            HEYREACH_MCP["HeyReach MCP"]
         end
     end
 
@@ -113,6 +114,7 @@ flowchart TB
         ATTIO[("Attio CRM")]
         SLACK["Slack<br/>Approvals & Briefs"]
         EMAIL["Email<br/>(via Instantly)"]
+        LINKEDIN["LinkedIn<br/>(via HeyReach)"]
         REDIS[("Upstash Redis<br/>Research Cache")]
         CLAUDE["Claude API"]
     end
@@ -145,6 +147,7 @@ flowchart TB
     MCP_REST --> QDRANT_MCP
     MCP_REST --> ATTIO_MCP
     MCP_REST --> INSTANTLY_MCP
+    MCP_REST --> HEYREACH_MCP
 
     %% Agent to MCP REST
     LS --> MCP_REST
@@ -155,6 +158,7 @@ flowchart TB
     %% MCP to External
     ATTIO_MCP --> ATTIO
     INSTANTLY_MCP --> EMAIL
+    HEYREACH_MCP --> LINKEDIN
 
     %% Agent to External (direct)
     LS --> AIRTABLE
@@ -187,9 +191,9 @@ flowchart TB
     class WH_LS,WH_RH,WH_MP,WH_LL,CAL_WH,SLACK_CMD,SLACK_VAL,N8N_SCHED,N8N_LL,INSTANTLY entry
     class LS,RH,MP,LL agent
     class BRAIN_SEL,KB brain
-    class QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP mcp
+    class QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP,HEYREACH_MCP mcp
     class MCP_REST rest
-    class AIRTABLE,ATTIO,SLACK,EMAIL,REDIS,CLAUDE external
+    class AIRTABLE,ATTIO,SLACK,EMAIL,LINKEDIN,REDIS,CLAUDE external
     class STATE_FILE state
 ```
 
@@ -239,6 +243,7 @@ flowchart TB
             QDRANT_T["Qdrant Tools<br/>• query_kb<br/>• get_brain<br/>• add_insight"]
             ATTIO_T["Attio Tools<br/>• find_person<br/>• update_person<br/>• create_task"]
             INST_T["Instantly Tools<br/>• 38 tools (v2 API)<br/>• campaigns, leads<br/>• emails, accounts"]
+            HEYREACH_T["HeyReach Tools<br/>• 35 tools<br/>• campaigns, inbox<br/>• accounts, lists"]
         end
     end
 
@@ -252,6 +257,7 @@ flowchart TB
         AIRTABLE[("Airtable")]
         SLACK["Slack<br/>Block Kit"]
         INSTANTLY["Instantly Email"]
+        LINKEDIN["LinkedIn"]
         CLAUDE["Claude API"]
     end
 
@@ -275,11 +281,13 @@ flowchart TB
     REST --> QDRANT_T
     REST --> ATTIO_T
     REST --> INST_T
+    REST --> HEYREACH_T
 
     %% Tools to Data/External
     QDRANT_T --> QDRANT
     ATTIO_T --> ATTIO
     INST_T --> INSTANTLY
+    HEYREACH_T --> LINKEDIN
 
     %% Direct connections
     LS --> AIRTABLE
@@ -304,9 +312,9 @@ flowchart TB
     class CAL,N8N,N8N_LL,INST_WH,MANUAL,WH_SCORE,WH_LL,SLACK_VAL trigger
     class LS,RH,MP,LL agent
     class REST mcp
-    class QDRANT_T,ATTIO_T,INST_T tool
+    class QDRANT_T,ATTIO_T,INST_T,HEYREACH_T tool
     class QDRANT,REDIS data
-    class ATTIO,AIRTABLE,SLACK,INSTANTLY,CLAUDE external
+    class ATTIO,AIRTABLE,SLACK,INSTANTLY,LINKEDIN,CLAUDE external
 ```
 
 ### Agent Responsibilities Matrix
@@ -1170,6 +1178,7 @@ flowchart TB
         ATTIO[("Attio CRM")]
         SLACK["Slack"]
         INSTANTLY["Instantly Email"]
+        LINKEDIN["LinkedIn"]
         VOYAGE["Voyage AI<br/>Embeddings"]
         CLAUDE["Claude API"]
     end
@@ -1187,6 +1196,7 @@ flowchart TB
                 QDRANT_MCP["Qdrant MCP"]
                 ATTIO_MCP["Attio MCP"]
                 INSTANTLY_MCP["Instantly MCP"]
+                HEYREACH_MCP["HeyReach MCP"]
             end
         end
 
@@ -1238,8 +1248,8 @@ flowchart TB
     classDef state fill:#fffde7,stroke:#f57f17
     classDef rest fill:#bbdefb,stroke:#1976d2
 
-    class AIRTABLE,ATTIO,SLACK,INSTANTLY,VOYAGE,CLAUDE external
-    class QDRANT,POSTGRES,REDIS,QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP,N8N infra
+    class AIRTABLE,ATTIO,SLACK,INSTANTLY,LINKEDIN,VOYAGE,CLAUDE external
+    class QDRANT,POSTGRES,REDIS,QDRANT_MCP,ATTIO_MCP,INSTANTLY_MCP,HEYREACH_MCP,N8N infra
     class MCP_REST rest
     class LEAD_SCORER,REPLY_HANDLER,MEETING_PREP,LEARNING_LOOP,TYPES,QDRANT_CLIENT,STATE,EMBEDDINGS app
     class LS_STATE,RH_STATE,MP_STATE,LL_STATE state
@@ -1267,7 +1277,7 @@ flowchart LR
         ATTIO_MCP["Attio MCP"]
         INST_MCP["Instantly MCP"]
         SLACK_MCP["Slack MCP"]
-        LI_MCP["LinkedIn MCP"]
+        HEYREACH_MCP["HeyReach MCP"]
     end
 
     subgraph DirectSDK["Direct SDK (TypeScript)"]
@@ -1294,7 +1304,7 @@ flowchart LR
     INST_MCP --> INSTANTLY["Instantly"]
     SLACK_MCP --> SLACK["Slack API"]
     SLACK_SDK --> SLACK
-    LI_MCP --> AIMFOX["Aimfox"]
+    HEYREACH_MCP --> LINKEDIN["LinkedIn"]
 ```
 
 ---
@@ -1331,6 +1341,7 @@ flowchart LR
 
 | Date | Version | Changes | Author |
 |------|---------|---------|--------|
+| 2026-01-21 | 1.4 | Added HeyReach MCP status ✅ (35 tools: campaigns, inbox, accounts, lists, leads, stats, webhooks) | Atlas GTM Team |
 | 2026-01-21 | 1.3 | Updated Instantly MCP status to ✅ complete (38 tools via v2 API: campaigns, leads, emails, accounts, analytics, jobs) | Atlas GTM Team |
 | 2026-01-20 | 1.2 | Added Learning Loop Agent flow (insight extraction, quality gates, validation workflow, weekly synthesis), updated overview diagrams, glossary terms | Atlas GTM Team |
 | 2026-01-20 | 1.1 | Added Meeting Prep Agent flow, Agent Communication Overview, updated status tables, MCP REST API layer | Atlas GTM Team |
