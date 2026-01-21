@@ -8,8 +8,10 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { extractToolResult, forceToolChoice } from '@atlas-gtm/lib';
 import type { Classification } from './contracts/handler-result';
 import type { LeadContext } from './contracts/reply-input';
+import { INSIGHT_TOOL, type InsightExtraction, type ExtractedInsightItem } from './contracts/insight-tool';
 
 // ===========================================
 // Insight Types
@@ -174,7 +176,7 @@ export class InsightExtractor {
   // ===========================================
 
   /**
-   * Use Claude to extract insights
+   * Use Claude to extract insights using structured outputs
    */
   private async extractWithClaude(params: {
     replyText: string;
@@ -195,20 +197,49 @@ export class InsightExtractor {
     const systemPrompt = this.buildSystemPrompt();
     const userPrompt = this.buildUserPrompt(params);
 
+    // Use structured outputs via tool use pattern
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: this.maxTokens,
       system: systemPrompt,
+      tools: [INSIGHT_TOOL.tool],
+      tool_choice: forceToolChoice(INSIGHT_TOOL.name),
       messages: [{ role: 'user', content: userPrompt }],
     });
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
     const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
 
-    return {
-      insights: this.parseExtractionResponse(text),
-      tokensUsed,
-    };
+    // Extract tool result using structured output helper
+    const toolResult = extractToolResult(response.content, INSIGHT_TOOL.name);
+    if (!toolResult) {
+      return {
+        insights: [],
+        tokensUsed,
+      };
+    }
+
+    // Parse and validate with Zod schema (type-safe!)
+    try {
+      const parsed = INSIGHT_TOOL.parse(toolResult) as InsightExtraction;
+
+      // Map the parsed insights to the expected format
+      return {
+        insights: parsed.insights.map((item: ExtractedInsightItem) => ({
+          category: item.category as InsightCategory,
+          content: item.content,
+          importance: item.importance as InsightImportance,
+          actionable: item.actionable,
+          suggestedActions: item.action_suggestion ? [item.action_suggestion] : undefined,
+          confidence: item.confidence,
+        })),
+        tokensUsed,
+      };
+    } catch {
+      return {
+        insights: [],
+        tokensUsed,
+      };
+    }
   }
 
   private buildSystemPrompt(): string {
@@ -217,39 +248,25 @@ export class InsightExtractor {
 INSIGHT CATEGORIES:
 - buying_process: Information about how the company makes purchasing decisions
 - pain_point: Explicit problems or challenges the lead mentions
-- competitor_mention: References to competitive solutions or alternatives
-- objection_pattern: Common objection themes that could inform future responses
-- success_indicator: Signals of genuine interest or buying intent
-- timing_signal: Information about budget cycles, project timelines, or decision timing
-- decision_maker: Details about who makes decisions or needs to be involved
-- budget_indicator: Hints about budget availability or constraints
+- competitive_intel: References to competitive solutions or alternatives (tools they use)
+- objection: Common objection themes that could inform future responses
+- messaging_effectiveness: What messaging resonated or fell flat
 
 IMPORTANCE LEVELS:
 - high: Directly actionable, affects immediate strategy
 - medium: Useful context for personalization
 - low: Background information for reference
 
-For each insight, provide:
-1. Category (from the list above)
-2. Content (concise summary of the insight)
-3. Importance (high/medium/low)
-4. Actionable (true/false)
-5. Suggested actions (if actionable)
-6. Confidence (0.0-1.0)
+For each insight, extract:
+1. Category from the list above
+2. Clear, actionable content describing the insight
+3. Importance level based on strategic value
+4. Whether it's actionable (suggests a specific action)
+5. If actionable, a suggested action
+6. Direct quote from the source (if applicable)
+7. Confidence score (0.0-1.0)
 
-Output as JSON array:
-[
-  {
-    "category": "pain_point",
-    "content": "Lead mentions struggling with...",
-    "importance": "high",
-    "actionable": true,
-    "suggestedActions": ["Address this in next outreach", "Include relevant case study"],
-    "confidence": 0.85
-  }
-]
-
-If no meaningful insights can be extracted, return an empty array: []`;
+Use the extract_insights tool to provide your structured analysis.`;
   }
 
   private buildUserPrompt(params: {
@@ -274,69 +291,9 @@ If no meaningful insights can be extracted, return an empty array: []`;
       prompt += `\n\nPREVIOUS CONVERSATION:\n${threadContext}`;
     }
 
-    prompt += '\n\nExtract insights as JSON:';
+    prompt += '\n\nUse the extract_insights tool to provide your analysis.';
 
     return prompt;
-  }
-
-  private parseExtractionResponse(text: string): Array<{
-    category: InsightCategory;
-    content: string;
-    importance: InsightImportance;
-    actionable: boolean;
-    suggestedActions?: string[];
-    confidence: number;
-  }> {
-    // Extract JSON array from response
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      return [];
-    }
-
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-
-      return parsed
-        .filter(this.isValidInsight)
-        .map(item => ({
-          category: item.category as InsightCategory,
-          content: String(item.content),
-          importance: (item.importance ?? 'medium') as InsightImportance,
-          actionable: Boolean(item.actionable),
-          suggestedActions: Array.isArray(item.suggestedActions)
-            ? item.suggestedActions.map(String)
-            : undefined,
-          confidence: Math.max(0, Math.min(1, Number(item.confidence) || 0.5)),
-        }));
-    } catch {
-      return [];
-    }
-  }
-
-  private isValidInsight(item: unknown): boolean {
-    if (!item || typeof item !== 'object') return false;
-
-    const obj = item as Record<string, unknown>;
-    const validCategories: InsightCategory[] = [
-      'buying_process',
-      'pain_point',
-      'competitor_mention',
-      'objection_pattern',
-      'success_indicator',
-      'timing_signal',
-      'decision_maker',
-      'budget_indicator',
-    ];
-
-    return (
-      typeof obj.category === 'string' &&
-      validCategories.includes(obj.category as InsightCategory) &&
-      typeof obj.content === 'string' &&
-      obj.content.length > 0
-    );
   }
 
   // ===========================================

@@ -233,14 +233,14 @@ describe('buildAnglePrompt', () => {
     expect(prompt).toContain('integration');
   });
 
-  test('includes JSON response format instructions', () => {
+  test('includes tool usage instructions', () => {
     const lead = createTestLead();
     const prompt = buildAnglePrompt(lead, []);
 
-    expect(prompt).toContain('JSON');
-    expect(prompt).toContain('"angle"');
-    expect(prompt).toContain('"confidence"');
-    expect(prompt).toContain('"personalization_hints"');
+    // Structured outputs: prompt instructs Claude to use the tool
+    expect(prompt).toContain('recommend_angle tool');
+    expect(prompt).toContain('confidence level');
+    expect(prompt).toContain('personalization hints');
   });
 
   test('handles empty signals array', () => {

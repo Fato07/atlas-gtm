@@ -22,15 +22,24 @@ import type { LeadContext } from '../../reply-handler/contracts/reply-input';
 // ===========================================
 
 function createMockAnthropicClient(personalizedResponse?: string) {
+  const responseText = personalizedResponse ?? 'Hi John, Thanks for your interest in our solution!';
+
   return {
     messages: {
       create: mock(async () => ({
         content: [
           {
-            type: 'text',
-            text:
-              personalizedResponse ??
-              'Hi John, Thanks for your interest in our solution!',
+            type: 'tool_use',
+            id: 'toolu_test_123',
+            name: 'generate_response',
+            input: {
+              response_text: responseText,
+              template_used: 'template_positive_001',
+              personalization_applied: ['Added first name', 'Referenced company'],
+              confidence: 0.92,
+              tone: 'friendly',
+              call_to_action: 'Schedule a call',
+            },
           },
         ],
         usage: {
@@ -545,10 +554,10 @@ describe('Response cleanup', () => {
     expect(result.responseText).not.toContain('\n\n\n');
   });
 
-  test('removes common preambles from Claude response', async () => {
-    const mockClient = createMockAnthropicClient(
-      "Here's the personalized email:\n\nHi John, Thanks for your interest!"
-    );
+  test('uses structured response_text directly without preambles', async () => {
+    // With structured outputs, response comes from response_text field directly
+    // No preamble stripping needed - the tool schema ensures clean output
+    const mockClient = createMockAnthropicClient('Hi John, Thanks for your interest!');
     const responder = createResponder({
       client: mockClient as any,
       campaign: {
@@ -566,7 +575,8 @@ describe('Response cleanup', () => {
       replyText: 'Yes, interested!',
     });
 
-    expect(result.responseText).not.toContain("Here's the personalized");
+    // Structured output ensures response_text is the actual email content
+    expect(result.responseText).toBe('Hi John, Thanks for your interest!');
     expect(result.responseText).toContain('Hi John');
   });
 });

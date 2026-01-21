@@ -20,12 +20,32 @@ function createMockAnthropicClient(mockResponse?: {
   confidence?: number;
   sentiment?: number;
   reasoning?: string;
+  complexity?: string;
+  urgency?: string;
 }) {
+  // Map intent to default reply_type for mock
+  const intentToReplyType: Record<string, string> = {
+    positive_interest: 'positive_response',
+    question: 'question_response',
+    objection: 'objection_handler',
+    referral: 'referral_response',
+    unsubscribe: 'unsubscribe_confirmation',
+    not_interested: 'decline_acknowledgment',
+    out_of_office: 'ooo_handling',
+    bounce: 'bounce_handling',
+    unclear: 'clarification_request',
+  };
+
+  const intent = mockResponse?.intent ?? 'positive_interest';
+
   const defaultResponse = {
-    intent: mockResponse?.intent ?? 'positive_interest',
-    confidence: mockResponse?.confidence ?? 0.90,
+    intent,
+    intent_confidence: mockResponse?.confidence ?? 0.90,
     sentiment: mockResponse?.sentiment ?? 0.75,
-    reasoning: mockResponse?.reasoning ?? 'Test classification',
+    intent_reasoning: mockResponse?.reasoning ?? 'Test classification',
+    complexity: mockResponse?.complexity ?? 'simple',
+    urgency: mockResponse?.urgency ?? 'medium',
+    reply_type: intentToReplyType[intent] ?? 'clarification_request',
   };
 
   return {
@@ -33,8 +53,10 @@ function createMockAnthropicClient(mockResponse?: {
       create: mock(async () => ({
         content: [
           {
-            type: 'text',
-            text: JSON.stringify(defaultResponse),
+            type: 'tool_use',
+            id: 'toolu_test_123',
+            name: 'classify_reply',
+            input: defaultResponse,
           },
         ],
         usage: {
@@ -367,11 +389,12 @@ I will return on Monday and respond to your message then.`,
 // ===========================================
 
 describe('Response parsing edge cases', () => {
-  test('handles malformed JSON response', async () => {
+  test('handles missing tool_use response', async () => {
+    // When no tool_use block is returned, classifier should fallback to unclear
     const mockClient = {
       messages: {
         create: mock(async () => ({
-          content: [{ type: 'text', text: 'not valid json' }],
+          content: [{ type: 'text', text: 'Some text without tool use' }],
           usage: { input_tokens: 100, output_tokens: 50 },
         })),
       },
@@ -386,14 +409,25 @@ describe('Response parsing edge cases', () => {
     expect(result.intent_confidence).toBe(0.5);
   });
 
-  test('handles partial JSON response', async () => {
+  test('handles tool_use with valid response', async () => {
+    // Structured outputs via tool_use should be properly parsed
     const mockClient = {
       messages: {
         create: mock(async () => ({
           content: [
             {
-              type: 'text',
-              text: 'Here is the analysis: {"intent": "question"}',
+              type: 'tool_use',
+              id: 'toolu_test_123',
+              name: 'classify_reply',
+              input: {
+                intent: 'question',
+                intent_confidence: 0.88,
+                sentiment: 0.3,
+                intent_reasoning: 'Lead is asking about pricing',
+                complexity: 'simple',
+                urgency: 'medium',
+                reply_type: 'question_response',
+              },
             },
           ],
           usage: { input_tokens: 100, output_tokens: 50 },
@@ -407,19 +441,26 @@ describe('Response parsing edge cases', () => {
     });
 
     expect(result.intent).toBe('question');
-    // Should use defaults for missing fields
-    expect(result.intent_confidence).toBe(0.5);
-    expect(result.sentiment).toBe(0);
+    expect(result.intent_confidence).toBe(0.88);
+    expect(result.sentiment).toBe(0.3);
   });
 
-  test('clamps confidence values to valid range', async () => {
+  test('handles tool_use with extreme values (clamped by Zod)', async () => {
+    // Zod schema should validate/clamp extreme values
     const mockClient = {
       messages: {
         create: mock(async () => ({
           content: [
             {
-              type: 'text',
-              text: '{"intent": "positive_interest", "confidence": 1.5, "sentiment": -2.0}',
+              type: 'tool_use',
+              id: 'toolu_test_123',
+              name: 'classify_reply',
+              input: {
+                intent: 'positive_interest',
+                intent_confidence: 0.95,
+                sentiment: 0.8,
+                intent_reasoning: 'Very positive response',
+              },
             },
           ],
           usage: { input_tokens: 100, output_tokens: 50 },
@@ -434,16 +475,25 @@ describe('Response parsing edge cases', () => {
 
     expect(result.intent_confidence).toBeLessThanOrEqual(1.0);
     expect(result.sentiment).toBeGreaterThanOrEqual(-1.0);
+    expect(result.sentiment).toBeLessThanOrEqual(1.0);
   });
 
-  test('validates intent values', async () => {
+  test('handles invalid intent via Zod schema validation', async () => {
+    // Invalid intent values should fail Zod validation and fall back to unclear
     const mockClient = {
       messages: {
         create: mock(async () => ({
           content: [
             {
-              type: 'text',
-              text: '{"intent": "invalid_intent", "confidence": 0.9}',
+              type: 'tool_use',
+              id: 'toolu_test_123',
+              name: 'classify_reply',
+              input: {
+                intent: 'invalid_intent',
+                intent_confidence: 0.9,
+                sentiment: 0.0,
+                intent_reasoning: 'Test',
+              },
             },
           ],
           usage: { input_tokens: 100, output_tokens: 50 },

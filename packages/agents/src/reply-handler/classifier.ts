@@ -9,12 +9,14 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { extractToolResult, forceToolChoice } from '@atlas-gtm/lib';
 import type {
   Classification,
   Intent,
   Complexity,
   Urgency,
 } from './contracts/handler-result';
+import { CLASSIFICATION_TOOL, type ClassificationResult } from './contracts/classification-tool';
 import { parseEmailReply, detectAutoReply, getWordCount } from './email-parser';
 
 // ===========================================
@@ -200,7 +202,7 @@ export class ReplyClassifier {
   // ===========================================
 
   /**
-   * Use Claude for detailed classification
+   * Use Claude for detailed classification with structured outputs
    */
   private async classifyWithClaude(params: {
     content: string;
@@ -219,18 +221,49 @@ export class ReplyClassifier {
     const systemPrompt = this.buildSystemPrompt();
     const userPrompt = this.buildUserPrompt(params);
 
+    // Use structured outputs via tool use pattern
     const response = await this.client.messages.create({
       model: this.model,
       max_tokens: this.maxTokens,
       system: systemPrompt,
+      tools: [CLASSIFICATION_TOOL.tool],
+      tool_choice: forceToolChoice(CLASSIFICATION_TOOL.name),
       messages: [{ role: 'user', content: userPrompt }],
     });
 
-    // Parse response
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
     const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
 
-    return this.parseClassificationResponse(text, tokensUsed);
+    // Extract tool result using structured output helper
+    const toolResult = extractToolResult(response.content, CLASSIFICATION_TOOL.name);
+    if (!toolResult) {
+      return {
+        intent: 'unclear',
+        confidence: 0.5,
+        sentiment: 0,
+        reasoning: 'No tool result returned from classification',
+        tokensUsed,
+      };
+    }
+
+    // Parse and validate with Zod schema (type-safe!)
+    try {
+      const parsed = CLASSIFICATION_TOOL.parse(toolResult) as ClassificationResult;
+      return {
+        intent: parsed.intent,
+        confidence: parsed.intent_confidence,
+        sentiment: parsed.sentiment,
+        reasoning: parsed.intent_reasoning,
+        tokensUsed,
+      };
+    } catch (error) {
+      return {
+        intent: 'unclear',
+        confidence: 0.5,
+        sentiment: 0,
+        reasoning: `Failed to parse classification: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        tokensUsed,
+      };
+    }
   }
 
   private buildSystemPrompt(): string {
@@ -247,22 +280,19 @@ export class ReplyClassifier {
    - bounce: Email delivery failure
    - unclear: Cannot determine intent
 
-2. CONFIDENCE (0.0-1.0): How certain you are about the intent classification
+2. COMPLEXITY - How complex is the required response:
+   - simple: Straightforward reply, single intent
+   - medium: Requires some context or consideration
+   - complex: Multi-part response or nuanced handling needed
 
-3. SENTIMENT (-1.0 to 1.0):
-   - -1.0: Very negative (angry, hostile, frustrated)
-   - 0.0: Neutral
-   - 1.0: Very positive (enthusiastic, excited, grateful)
+3. URGENCY - How quickly should we respond:
+   - low: Can wait, non-time-sensitive
+   - medium: Respond within reasonable time
+   - high: Time-sensitive, needs immediate attention
 
-4. REASONING: Brief explanation of why you chose this classification
+4. SENTIMENT (-1.0 to 1.0): -1.0 very negative to +1.0 very positive
 
-Output your analysis in this exact JSON format:
-{
-  "intent": "<intent>",
-  "confidence": <0.0-1.0>,
-  "sentiment": <-1.0 to 1.0>,
-  "reasoning": "<brief explanation>"
-}`;
+Use the classify_reply tool to provide your structured analysis.`;
   }
 
   private buildUserPrompt(params: {
@@ -287,67 +317,9 @@ Output your analysis in this exact JSON format:
       prompt += `\n\nInitial pattern match suggests: ${params.heuristicIntent} (verify this)`;
     }
 
-    prompt += '\n\nProvide your classification as JSON:';
+    prompt += '\n\nUse the classify_reply tool to provide your analysis.';
 
     return prompt;
-  }
-
-  private parseClassificationResponse(
-    text: string,
-    tokensUsed: number
-  ): {
-    intent: Intent;
-    confidence: number;
-    sentiment: number;
-    reasoning: string;
-    tokensUsed: number;
-  } {
-    // Extract JSON from response
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return {
-        intent: 'unclear',
-        confidence: 0.5,
-        sentiment: 0,
-        reasoning: 'Failed to parse classification response',
-        tokensUsed,
-      };
-    }
-
-    try {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        intent: this.validateIntent(parsed.intent),
-        confidence: Math.max(0, Math.min(1, parsed.confidence ?? 0.5)),
-        sentiment: Math.max(-1, Math.min(1, parsed.sentiment ?? 0)),
-        reasoning: parsed.reasoning ?? 'No reasoning provided',
-        tokensUsed,
-      };
-    } catch {
-      return {
-        intent: 'unclear',
-        confidence: 0.5,
-        sentiment: 0,
-        reasoning: 'Failed to parse JSON response',
-        tokensUsed,
-      };
-    }
-  }
-
-  private validateIntent(intent: string): Intent {
-    const validIntents: Intent[] = [
-      'positive_interest',
-      'question',
-      'objection',
-      'referral',
-      'unsubscribe',
-      'not_interested',
-      'out_of_office',
-      'bounce',
-      'unclear',
-    ];
-
-    return validIntents.includes(intent as Intent) ? (intent as Intent) : 'unclear';
   }
 
   // ===========================================
