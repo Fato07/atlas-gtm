@@ -8,8 +8,10 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { extractToolResult, forceToolChoice } from '@atlas-gtm/lib';
 import type { KBMatch } from './contracts/handler-result';
 import type { LeadContext } from './contracts/reply-input';
+import { RESPONSE_TOOL, type PersonalizedResponse } from './contracts/response-tool';
 import type { TemplateVariables } from './types';
 import { buildTemplateVariables } from './types';
 
@@ -178,7 +180,7 @@ export class ResponseGenerator {
   // ===========================================
 
   /**
-   * Apply Claude personalization to template
+   * Apply Claude personalization to template using structured outputs
    */
   private async applyPersonalization(params: {
     template: string;
@@ -198,22 +200,33 @@ export class ResponseGenerator {
     );
 
     try {
+      // Use structured outputs via tool use pattern
       const response = await this.client.messages.create({
         model: this.personalization.model,
         max_tokens: this.personalization.maxTokens,
         system: systemPrompt,
+        tools: [RESPONSE_TOOL.tool],
+        tool_choice: forceToolChoice(RESPONSE_TOOL.name),
         messages: [{ role: 'user', content: userPrompt }],
       });
 
-      const text =
-        response.content[0].type === 'text' ? response.content[0].text : template;
       const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
 
-      // Extract just the response (remove any preamble/explanation)
-      const cleanedText = this.extractPersonalizedResponse(text);
+      // Extract tool result using structured output helper
+      const toolResult = extractToolResult(response.content, RESPONSE_TOOL.name);
+      if (!toolResult) {
+        // Fallback to original template if no tool result
+        return {
+          text: template,
+          tokensUsed,
+        };
+      }
+
+      // Parse and validate with Zod schema (type-safe!)
+      const parsed = RESPONSE_TOOL.parse(toolResult) as PersonalizedResponse;
 
       return {
-        text: cleanedText,
+        text: parsed.response_text,
         tokensUsed,
       };
     } catch (error) {
@@ -240,9 +253,8 @@ CRITICAL RULES (FR-014):
 5. Keep the tone professional and appropriate for B2B sales
 6. DO NOT add new information not in the original template
 7. DO NOT change the meaning or intent of the message
-8. Output ONLY the personalized email text - no explanations or preamble
 
-Your output should be the complete personalized email, ready to send.`;
+Use the generate_response tool to provide your personalized email.`;
   }
 
   private buildPersonalizationUserPrompt(
@@ -265,26 +277,9 @@ Your output should be the complete personalized email, ready to send.`;
       prompt += `\nPREVIOUS CONVERSATION CONTEXT:\n${threadContext}\n`;
     }
 
-    prompt += `\nOutput the personalized email:`;
+    prompt += `\nUse the generate_response tool to provide your personalized email.`;
 
     return prompt;
-  }
-
-  private extractPersonalizedResponse(text: string): string {
-    // Remove common preambles
-    const preambles = [
-      /^here['']?s the personalized.*?:\s*/i,
-      /^personalized email:\s*/i,
-      /^here is the personalized.*?:\s*/i,
-      /^the personalized response.*?:\s*/i,
-    ];
-
-    let cleaned = text.trim();
-    for (const preamble of preambles) {
-      cleaned = cleaned.replace(preamble, '');
-    }
-
-    return cleaned.trim();
   }
 
   // ===========================================

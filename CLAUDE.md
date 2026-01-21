@@ -283,8 +283,11 @@ bun run seed:brain --vertical=fintech --source=./data/fintech-kb.json
 - Research cache with Upstash Redis for company context (24h TTL) (008-meeting-prep-agent)
 - TypeScript 5.4+ (Bun runtime) for agents, Python 3.11+ for MCP extensions + @anthropic-ai/sdk, @qdrant/js-client-rest, @slack/web-api, Zod, structlog (010-learning-loop)
 - Qdrant (insights collection - existing schema), Upstash Redis (validation queue state) (010-learning-loop)
+- TypeScript 5.4+ (Bun runtime) + @anthropic-ai/sdk ^0.30.0, Zod 3.x, zod-to-json-schema (009-structured-outputs-refactor)
+- N/A (refactor only - no storage changes) (009-structured-outputs-refactor)
 
 ## Recent Changes
+- 009-structured-outputs-refactor: Migrated Lead Scorer and Reply Handler agents to use Anthropic SDK structured outputs via tool use pattern. Replaced fragile regex JSON extraction with type-safe `buildTool()` → `forceToolChoice()` → `extractToolResult()` → `TOOL.parse()` flow. Added JSDoc examples to lib utilities. 38.8% code reduction in implementation files. All 817 tests pass.
 - 010-learning-loop: Automated insight extraction from email replies and call transcripts. Quality gates (confidence, duplicate, importance). Slack-based validation queue for human review. KB write with provenance tracking. Weekly synthesis reports. Template A/B performance tracking.
 - 008-meeting-prep-agent: Pre-call brief generation (30 min before meetings) and post-call transcript analysis with BANT scoring. Modular architecture with sub-agents for Instantly/Airtable/Attio/KB. Slack Block Kit delivery. Manual request via `/brief` command. Error handling with retry.
 - 007-attio-mcp-server: Production-quality Attio CRM integration with error handling and API patterns

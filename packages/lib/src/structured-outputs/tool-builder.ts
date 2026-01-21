@@ -99,6 +99,24 @@ export function buildTool<T extends ZodSchema>(
  * @param content - The message content blocks from Claude's response
  * @param toolName - The name of the tool to extract
  * @returns The tool input or null if not found
+ *
+ * @example
+ * ```typescript
+ * const response = await client.messages.create({
+ *   model: 'claude-sonnet-4-20250514',
+ *   tools: [CLASSIFICATION_TOOL.tool],
+ *   tool_choice: forceToolChoice(CLASSIFICATION_TOOL.name),
+ *   messages: [{ role: 'user', content: prompt }],
+ * });
+ *
+ * const result = extractToolResult(response.content, CLASSIFICATION_TOOL.name);
+ * if (!result) {
+ *   // Handle case where Claude didn't return tool_use block
+ *   return fallbackResponse;
+ * }
+ *
+ * const classification = CLASSIFICATION_TOOL.parse(result);
+ * ```
  */
 export function extractToolResult(
   content: Array<{ type: string; name?: string; input?: unknown }>,
@@ -113,8 +131,21 @@ export function extractToolResult(
 /**
  * Create tool_choice configuration to force a specific tool.
  *
+ * Use this to ensure Claude always uses the specified tool for structured outputs,
+ * rather than potentially choosing to respond with text.
+ *
  * @param toolName - The name of the tool to force
  * @returns Tool choice configuration for Anthropic SDK
+ *
+ * @example
+ * ```typescript
+ * const response = await client.messages.create({
+ *   model: 'claude-sonnet-4-20250514',
+ *   tools: [BRIEF_TOOL.tool],
+ *   tool_choice: forceToolChoice(BRIEF_TOOL.name), // Forces structured output
+ *   messages: [{ role: 'user', content: briefPrompt }],
+ * });
+ * ```
  */
 export function forceToolChoice(toolName: string): { type: 'tool'; name: string } {
   return { type: 'tool', name: toolName };

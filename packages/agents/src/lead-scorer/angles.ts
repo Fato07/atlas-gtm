@@ -11,9 +11,11 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { extractToolResult, forceToolChoice } from '@atlas-gtm/lib';
 import type { MessagingAngle } from './contracts/scoring-result';
 import type { RuleResult } from './contracts/scoring-result';
 import type { LeadInput } from './contracts/lead-input';
+import { ANGLE_TOOL, type AngleRecommendation } from './contracts/angle-tool';
 import {
   getLangfuse,
   isLangfuseEnabled,
@@ -27,12 +29,8 @@ import {
 // Types
 // ===========================================
 
-export interface AngleRecommendation {
-  angle: MessagingAngle;
-  confidence: number;
-  reasoning: string;
-  personalization_hints: string[];
-}
+// AngleRecommendation is imported from contracts/angle-tool.ts
+export type { AngleRecommendation } from './contracts/angle-tool';
 
 export interface SignalSummary {
   attribute: string;
@@ -113,15 +111,11 @@ ${signalsText || 'No strong signals detected'}
 ## Your Task
 Based on the lead information and scoring signals, determine:
 1. The best messaging angle from the 5 options above
-2. 2-4 specific personalization hints for the outreach (e.g., "Mention their recent Series B", "Reference their Salesforce integration")
+2. Your confidence level (0.0-1.0) in this recommendation
+3. A brief explanation of why this angle fits best
+4. 2-4 specific personalization hints for the outreach (e.g., "Mention their recent Series B", "Reference their Salesforce integration")
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "angle": "technical" | "roi" | "compliance" | "speed" | "integration",
-  "confidence": 0.0-1.0,
-  "reasoning": "Brief explanation of why this angle fits best",
-  "personalization_hints": ["hint 1", "hint 2", "hint 3"]
-}`;
+Use the recommend_angle tool to provide your structured response.`;
 }
 
 // ===========================================
@@ -156,8 +150,9 @@ export interface ClaudeAngleResult extends AngleRecommendation {
 }
 
 /**
- * Call Claude to infer messaging angle
+ * Call Claude to infer messaging angle using structured outputs.
  *
+ * Uses the ANGLE_TOOL for type-safe, schema-validated responses.
  * Tracks the generation in Langfuse for observability when enabled.
  */
 export async function callClaudeForAngle(
@@ -198,6 +193,8 @@ export async function callClaudeForAngle(
       metadata: {
         leadId,
         promptLength: prompt.length,
+        structuredOutput: true,
+        toolName: ANGLE_TOOL.name,
       },
     });
   }
@@ -236,9 +233,12 @@ export async function callClaudeForAngle(
   }
 
   try {
+    // Use structured outputs via tool use pattern
     const response = await anthropic.messages.create({
       model: ANGLE_MODEL,
       max_tokens: 512,
+      tools: [ANGLE_TOOL.tool],
+      tool_choice: forceToolChoice(ANGLE_TOOL.name),
       messages: [
         {
           role: 'user',
@@ -249,37 +249,20 @@ export async function callClaudeForAngle(
 
     const latencyMs = Date.now() - startTime;
 
-    // Extract text content from response
-    const textContent = response.content.find((block) => block.type === 'text');
-    if (!textContent || textContent.type !== 'text') {
-      throw new Error('No text response from Claude');
+    // Extract tool result using the structured output helper
+    const toolResult = extractToolResult(response.content, ANGLE_TOOL.name);
+    if (!toolResult) {
+      throw new Error(`No tool result returned for ${ANGLE_TOOL.name}`);
     }
 
-    // Parse JSON response
-    const jsonMatch = textContent.text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in Claude response');
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]) as AngleRecommendation;
-
-    // Validate angle is one of the allowed values
-    const validAngles: MessagingAngle[] = [
-      'technical',
-      'roi',
-      'compliance',
-      'speed',
-      'integration',
-    ];
-    if (!validAngles.includes(parsed.angle)) {
-      throw new Error(`Invalid angle from Claude: ${parsed.angle}`);
-    }
+    // Parse and validate with Zod schema (type-safe!)
+    const parsed = ANGLE_TOOL.parse(toolResult);
 
     const result: ClaudeAngleResult = {
       angle: parsed.angle,
-      confidence: Math.max(0, Math.min(1, parsed.confidence || 0.5)),
-      reasoning: parsed.reasoning || 'No reasoning provided',
-      personalization_hints: parsed.personalization_hints || [],
+      confidence: parsed.confidence,
+      reasoning: parsed.reasoning,
+      personalization_hints: parsed.personalization_hints,
     };
 
     // Track token usage
@@ -304,6 +287,7 @@ export async function callClaudeForAngle(
           latencyMs,
           angle: result.angle,
           confidence: result.confidence,
+          structuredOutput: true,
         },
       });
     }
