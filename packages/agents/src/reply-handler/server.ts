@@ -16,6 +16,7 @@
  *   SLACK_APPROVAL_CHANNEL    - Slack channel for approvals
  *   SLACK_ESCALATION_CHANNEL  - Slack channel for escalations
  *   INSTANTLY_WEBHOOK_SECRET  - Instantly webhook secret
+ *   HEYREACH_WEBHOOK_SECRET   - HeyReach webhook secret
  *   MCP_SERVER_URL       - MCP server URL
  *   DEFAULT_BRAIN_ID     - Default brain ID for processing
  *
@@ -53,6 +54,9 @@ interface EnvConfig {
   // Instantly
   instantlyWebhookSecret: string;
 
+  // HeyReach
+  heyreachWebhookSecret: string;
+
   // MCP Server
   mcpServerUrl: string;
 
@@ -75,6 +79,7 @@ function loadEnvConfig(): EnvConfig {
     'SLACK_APPROVAL_CHANNEL',
     'SLACK_ESCALATION_CHANNEL',
     'INSTANTLY_WEBHOOK_SECRET',
+    'HEYREACH_WEBHOOK_SECRET',
     'MCP_SERVER_URL',
     'DEFAULT_BRAIN_ID',
   ];
@@ -95,6 +100,7 @@ function loadEnvConfig(): EnvConfig {
     slackApprovalChannel: process.env.SLACK_APPROVAL_CHANNEL!,
     slackEscalationChannel: process.env.SLACK_ESCALATION_CHANNEL!,
     instantlyWebhookSecret: process.env.INSTANTLY_WEBHOOK_SECRET!,
+    heyreachWebhookSecret: process.env.HEYREACH_WEBHOOK_SECRET!,
     mcpServerUrl: process.env.MCP_SERVER_URL!,
     defaultBrainId: process.env.DEFAULT_BRAIN_ID!,
     port: parseInt(process.env.REPLY_HANDLER_PORT ?? '3002', 10),
@@ -346,6 +352,7 @@ async function main() {
     port: envConfig.port,
     brainId: envConfig.defaultBrainId,
     instantlySecret: envConfig.instantlyWebhookSecret,
+    heyreachSecret: envConfig.heyreachWebhookSecret,
     slackSigningSecret: envConfig.slackSigningSecret,
     handleReply: (input) => agent.processReply(input),
     handleSlackAction,
