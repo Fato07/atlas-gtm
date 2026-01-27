@@ -10,7 +10,7 @@ import { PendingTypeSchema, UrgencySchema } from './common';
 // ============================================================================
 
 export const PendingItemSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1), // ValidationItem uses val_ prefix, not UUID
   type: PendingTypeSchema,
   created_at: z.string().datetime(),
   expires_at: z.string().datetime().nullable(),
@@ -54,7 +54,7 @@ export type PendingListResponse = z.infer<typeof PendingListResponseSchema>;
 
 export const PendingActionResponseSchema = z.object({
   success: z.literal(true),
-  item_id: z.string().uuid(),
+  item_id: z.string().min(1),
   action: z.enum(['approved', 'rejected']),
 });
 export type PendingActionResponse = z.infer<typeof PendingActionResponseSchema>;

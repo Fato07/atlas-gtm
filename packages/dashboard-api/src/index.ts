@@ -20,6 +20,7 @@ import metrics from './routes/metrics';
 import actions from './routes/actions';
 import { events } from './routes/events';
 import { startAgentMonitor } from './services/agent-monitor';
+import { initRedis, pingRedis } from './services/redis-client';
 
 // Create Hono app
 const app = new Hono();
@@ -56,7 +57,9 @@ app.use('*', errorHandler());
 app.get('/health', async (c) => {
   const timestamp = new Date().toISOString();
 
-  // Basic health check - we'll extend this in T015 to check services
+  // Check Redis connection
+  const redisUp = await pingRedis();
+
   return c.json({
     status: 'healthy',
     version: '0.1.0',
@@ -64,7 +67,7 @@ app.get('/health', async (c) => {
     services: {
       mcp_api: 'up',
       qdrant: 'up',
-      redis: 'up',
+      redis: redisUp ? 'up' : 'down',
       agents: {
         lead_scorer: 'up',
         reply_handler: 'up',
@@ -129,6 +132,15 @@ app.notFound((c) => {
 // ============================================================================
 
 const port = parseInt(process.env.DASHBOARD_API_PORT || '4006', 10);
+
+// Initialize Redis connection for pending items
+const redisInit = initRedis();
+if (redisInit.success) {
+  console.log('✅ Redis connection initialized');
+} else {
+  console.warn(`⚠️ Redis not configured: ${redisInit.error}`);
+  console.warn('   Pending items functionality will be limited');
+}
 
 // Start agent monitor for real-time SSE updates
 startAgentMonitor();
