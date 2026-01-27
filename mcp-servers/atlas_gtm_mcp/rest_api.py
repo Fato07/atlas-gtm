@@ -28,6 +28,35 @@ from .server import create_server
 
 logger = structlog.get_logger(__name__)
 
+
+def _serialize_for_json(value):
+    """Recursively serialize a value to ensure JSON compatibility.
+
+    Handles Pydantic models, dicts, lists, and primitive types.
+    This is needed because MCP tool results may contain Pydantic model instances
+    (like RootModel) that are not JSON-serializable by the standard json encoder.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        # Pydantic model (including RootModel) - convert to dict/list
+        return _serialize_for_json(value.model_dump())
+    if hasattr(value, "root"):
+        # Pydantic RootModel that hasn't been dumped
+        return _serialize_for_json(value.root)
+    if isinstance(value, dict):
+        return {k: _serialize_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_for_json(item) for item in value]
+    # For any other type, try to convert to string
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
 # Create the MCP server instance
 _mcp_server = None
 
@@ -130,10 +159,9 @@ def create_rest_app() -> FastAPI:
                 # Call the tool
                 result = await client.call_tool(tool_name, arguments)
 
-                # Handle result - check for structured data first
-                if hasattr(result, "data") and result.data is not None:
-                    response_data = result.data
-                elif hasattr(result, "content") and result.content:
+                # Handle result - prefer text content over raw data
+                # because result.data may be a Pydantic model that needs special handling
+                if hasattr(result, "content") and result.content:
                     # Parse content blocks
                     content_data = []
                     for block in result.content:
@@ -161,7 +189,14 @@ def create_rest_app() -> FastAPI:
                 )
 
                 # Wrap response in {success, result} format expected by mcp-bridge.ts
-                return JSONResponse(content={"success": True, "result": response_data})
+                # Serialize to handle any Pydantic models that may be in the response
+                logger.debug(
+                    "Response data before serialization",
+                    data_type=str(type(response_data)),
+                    data_repr=repr(response_data)[:500] if response_data else None,
+                )
+                serialized_data = _serialize_for_json(response_data)
+                return JSONResponse(content={"success": True, "result": serialized_data})
 
         except Exception as e:
             error_msg = str(e)

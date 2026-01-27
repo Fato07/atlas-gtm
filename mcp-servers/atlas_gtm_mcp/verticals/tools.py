@@ -64,6 +64,45 @@ def _handle_qdrant_error(e: Exception) -> None:
     raise ToolError(f"Vertical registry error: {e}") from e
 
 
+def _serialize_value(value):
+    """Recursively serialize a value to ensure JSON compatibility.
+
+    Handles Pydantic models, dicts, lists, and primitive types.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        # Pydantic model (including RootModel) - convert to dict/list
+        return _serialize_value(value.model_dump())
+    if hasattr(value, "root"):
+        # Pydantic RootModel that hasn't been dumped
+        return _serialize_value(value.root)
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_value(item) for item in value]
+    # For any other type, try to convert to string
+    try:
+        import json
+
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _serialize_payload(payload: dict) -> dict:
+    """Recursively serialize payload, converting Pydantic models to dicts.
+
+    This is needed because Qdrant payloads can contain Pydantic model instances
+    (like RootModel or other nested models) that are not JSON-serializable.
+    The REST API needs plain dicts for JSON serialization.
+    """
+    return _serialize_value(payload)
+
+
 def _ensure_collection_exists(qdrant: QdrantClient) -> None:
     """Ensure the verticals collection exists."""
     try:
@@ -117,7 +156,7 @@ def _get_vertical_by_slug(qdrant: QdrantClient, slug: str) -> dict | None:
         point = results[0]
         return {
             "id": str(point.id),
-            **point.payload,
+            **_serialize_payload(dict(point.payload)),
         }
     except Exception as e:
         _handle_qdrant_error(e)
@@ -301,7 +340,7 @@ def register_vertical_tools(mcp: FastMCP) -> None:
             return [
                 {
                     "id": str(point.id),
-                    **point.payload,
+                    **_serialize_payload(dict(point.payload)),
                 }
                 for point in results
             ]
