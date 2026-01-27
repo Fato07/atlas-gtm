@@ -19,6 +19,7 @@ on:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # Prevent hanging for 6 hours (GitHub default)
     permissions:
       contents: read
       pull-requests: write
@@ -28,9 +29,25 @@ jobs:
         image: qdrant/qdrant:latest
         ports:
           - 6333:6333
+        # Note: Docker health checks won't work here because Qdrant's minimal
+        # image doesn't include wget/curl. We use a runner-side check instead.
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait for Qdrant
+        run: |
+          echo "Waiting for Qdrant to be ready..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:6333/healthz > /dev/null 2>&1; then
+              echo "Qdrant is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Qdrant not ready, waiting 2s..."
+            sleep 2
+          done
+          echo "Qdrant failed to start within 60 seconds"
+          exit 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4

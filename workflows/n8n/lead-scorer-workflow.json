@@ -82,7 +82,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.LEAD_SCORER_URL || 'http://localhost:3001' }}/score",
+        "url": "={{ $env.LEAD_SCORER_URL }}/score",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "httpHeaderAuth",
         "sendHeaders": true,

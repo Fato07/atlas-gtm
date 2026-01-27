@@ -258,7 +258,8 @@ def main():
 
     logger.info("Starting test data seeding", qdrant_url=qdrant_url)
 
-    client = QdrantClient(url=qdrant_url)
+    # Add timeout to prevent hanging on connection issues
+    client = QdrantClient(url=qdrant_url, timeout=30)
 
     total_points = 0
     for collection_name in COLLECTIONS:

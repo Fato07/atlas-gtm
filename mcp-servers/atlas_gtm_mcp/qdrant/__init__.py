@@ -12,8 +12,10 @@ This module implements the MCP tools for the Atlas GTM Knowledge Base:
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
@@ -70,6 +72,155 @@ def _handle_qdrant_error(e: Exception) -> None:
     raise ToolError(f"Knowledge base error: {e}") from e
 
 
+def _serialize_value(value):
+    """Recursively serialize a value to ensure JSON compatibility.
+
+    Handles Pydantic models, dicts, lists, and primitive types.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if hasattr(value, "model_dump"):
+        # Pydantic model (including RootModel) - convert to dict/list
+        return _serialize_value(value.model_dump())
+    if hasattr(value, "root"):
+        # Pydantic RootModel that hasn't been dumped
+        return _serialize_value(value.root)
+    if isinstance(value, dict):
+        return {k: _serialize_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_value(item) for item in value]
+    # For any other type, try to convert to string
+    try:
+        # Check if it's JSON serializable
+        import json
+
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _serialize_payload(payload: dict) -> dict:
+    """Recursively serialize payload, converting Pydantic models to dicts.
+
+    This is needed because Qdrant payloads can contain Pydantic model instances
+    (like RootModel or other nested models) that are not JSON-serializable.
+    The REST API needs plain dicts for JSON serialization.
+
+    Args:
+        payload: Dictionary that may contain Pydantic model instances.
+
+    Returns:
+        A new dictionary with all Pydantic models converted to plain dicts.
+    """
+    return _serialize_value(payload)
+
+
+def _normalize_condition(payload: dict) -> dict:
+    """Ensure condition has required operator and value fields.
+
+    The UI expects condition to always have 'operator' and 'value' fields.
+    This helper provides defaults when data is missing or malformed.
+
+    Args:
+        payload: The point payload containing condition data.
+
+    Returns:
+        A condition dict with at least 'operator' and 'value' keys.
+    """
+    condition = payload.get("condition") or payload.get("match_condition") or {}
+
+    # Handle legacy string format for match_condition (e.g., "has_government_contracts = true")
+    if isinstance(condition, str):
+        return {
+            "operator": "eq",
+            "value": condition,  # Store the raw condition string as the value
+        }
+
+    # If condition is empty or missing required fields, provide defaults
+    if not condition or "operator" not in condition or "value" not in condition:
+        return {
+            "operator": condition.get("operator", "eq") if isinstance(condition, dict) else "eq",
+            "value": condition.get("value", "") if isinstance(condition, dict) else "",
+        }
+
+    return condition
+
+
+def _get_triggers(payload: dict) -> list[str]:
+    """Extract triggers array from payload for objection handlers.
+
+    The UI expects 'triggers' as an array of strings. Qdrant may store
+    either 'triggers' directly or 'objection_text' as a single string.
+
+    Args:
+        payload: The point payload containing trigger data.
+
+    Returns:
+        A list of trigger strings (at least empty list, never None).
+    """
+    # First try to get triggers directly
+    triggers = payload.get("triggers", [])
+    if triggers and isinstance(triggers, list):
+        return triggers
+
+    # Fallback: use objection_text as single trigger
+    objection_text = payload.get("objection_text", "")
+    if objection_text:
+        return [objection_text]
+
+    return []
+
+
+def _derive_attribute(name: str) -> str:
+    """Derive an attribute identifier from a display name.
+
+    Converts display names like "Government Contractor Status" to
+    snake_case identifiers like "government_contractor_status".
+
+    Args:
+        name: The display name to convert.
+
+    Returns:
+        A snake_case attribute identifier, or empty string if name is empty.
+    """
+    if not name:
+        return ""
+    # Remove non-alphanumeric characters except spaces
+    cleaned = re.sub(r'[^a-zA-Z0-9\s]', '', name)
+    # Convert to snake_case
+    return '_'.join(cleaned.lower().split())
+
+
+def _normalize_source(source) -> str | None:
+    """Normalize source field to string format.
+
+    Qdrant may store source as:
+    - A string: "TechCrunch"
+    - An object: {"name": "TechCrunch", "url": "...", "publish_date": "..."}
+    - None
+
+    The UI expects source to be a string or null, not an object.
+    React throws "Objects are not valid as React child" if we pass an object.
+
+    Args:
+        source: The source value from Qdrant payload (any type).
+
+    Returns:
+        String representation or None.
+    """
+    if source is None:
+        return None
+    if isinstance(source, str):
+        return source
+    if isinstance(source, dict):
+        # Extract name if available, otherwise format as string
+        return source.get("name") or str(source)
+    return str(source)
+
+
 # ==========================================================================
 # Phase 2: Foundational Helpers for Brain Lifecycle (003-brain-lifecycle)
 # ==========================================================================
@@ -111,6 +262,52 @@ async def _validate_brain_exists(brain_id: str) -> dict:
         raise
     except Exception as e:
         _handle_qdrant_error(e)
+
+
+async def _calculate_brain_stats_internal(brain_id: str) -> dict:
+    """Calculate stats for a brain by counting items in each collection.
+
+    This is an internal helper that calculates dynamic stats without validation
+    overhead. Used by get_brain and list_brains to return accurate counts.
+
+    Args:
+        brain_id: Brain ID to calculate stats for.
+
+    Returns:
+        Dict with icp_rules_count, templates_count, handlers_count,
+        research_docs_count, insights_count.
+    """
+    qdrant = _get_qdrant_client()
+
+    collections = [
+        ("icp_rules", "icp_rules_count"),
+        ("response_templates", "templates_count"),
+        ("objection_handlers", "handlers_count"),
+        ("market_research", "research_docs_count"),
+        ("insights", "insights_count"),
+    ]
+
+    counts = {}
+    for collection, count_key in collections:
+        try:
+            results, _ = qdrant.scroll(
+                collection_name=collection,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="brain_id", match=MatchValue(value=brain_id)
+                        )
+                    ]
+                ),
+                limit=1000,  # Count up to 1000 items
+                with_payload=False,
+            )
+            counts[count_key] = len(results)
+        except Exception:
+            # Collection may not exist or other error, default to 0
+            counts[count_key] = 0
+
+    return counts
 
 
 async def _validate_brain_seedable(brain_id: str) -> dict:
@@ -353,18 +550,20 @@ def register_qdrant_tools(mcp: FastMCP) -> None:
                 limit=limit,
             ).points
 
-            # Map to result format
+            # Map to result format (with fallbacks for legacy data formats)
             output = [
                 {
                     "id": str(hit.id),
                     "score": round(hit.score, 3),
                     "category": hit.payload.get("category"),
-                    "attribute": hit.payload.get("attribute"),
-                    "display_name": hit.payload.get("display_name", hit.payload.get("attribute")),
-                    "condition": hit.payload.get("condition", {}),
-                    "score_weight": hit.payload.get("score_weight", 0),
+                    # Fallback: use name (snake_cased) if attribute is missing
+                    "attribute": hit.payload.get("attribute") or _derive_attribute(hit.payload.get("name", "")),
+                    "display_name": hit.payload.get("display_name", hit.payload.get("name")),
+                    "condition": _normalize_condition(hit.payload),
+                    "score_weight": hit.payload.get("score_weight", hit.payload.get("weight", 0)),
                     "is_knockout": hit.payload.get("is_knockout", False),
-                    "reasoning": hit.payload.get("reasoning", ""),
+                    # Fallback: use criteria if reasoning is missing
+                    "reasoning": hit.payload.get("reasoning") or hit.payload.get("criteria", ""),
                 }
                 for hit in results
             ]
@@ -653,6 +852,356 @@ def register_qdrant_tools(mcp: FastMCP) -> None:
             _handle_qdrant_error(e)
 
     # ==========================================================================
+    # Dashboard List Tools - Simple list operations without semantic search
+    # ==========================================================================
+
+    @mcp.tool()
+    async def list_icp_rules(
+        brain_id: str,
+        category: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        List all ICP rules for a brain without semantic search.
+
+        Used by the Dashboard UI to display brain content.
+        Output schema matches UI ICPRuleSchema contract.
+
+        Args:
+            brain_id: Brain ID for vertical isolation
+            category: Optional filter by category (firmographic, technographic, behavioral, intent)
+            limit: Maximum rules to return (1-1000, default: 100)
+
+        Returns:
+            List of ICP rules, each containing:
+            id, brain_id, category, attribute, display_name, condition,
+            score_weight, is_knockout, reasoning, created_at, updated_at
+        """
+        start = time.perf_counter()
+        params = {"brain_id": brain_id, "category": category, "limit": limit}
+
+        try:
+            # Input validation
+            if not validate_brain_id(brain_id):
+                raise ToolError(f"Invalid brain_id format: {brain_id}")
+
+            if limit < 1 or limit > 1000:
+                raise ToolError("Limit must be between 1 and 1000")
+
+            if category is not None:
+                try:
+                    ICPCategory(category)
+                except ValueError:
+                    valid_categories = ", ".join([c.value for c in ICPCategory])
+                    raise ToolError(f"Invalid category: {category}. Valid: {valid_categories}")
+
+            # Build filter
+            must_conditions = [
+                FieldCondition(key="brain_id", match=MatchValue(value=brain_id))
+            ]
+
+            if category is not None:
+                must_conditions.append(
+                    FieldCondition(key="category", match=MatchValue(value=category))
+                )
+
+            # Scroll through collection (no semantic search)
+            qdrant = _get_qdrant_client()
+            results, _ = qdrant.scroll(
+                collection_name="icp_rules",
+                scroll_filter=Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+            )
+
+            # Map to result format - field names match UI contract (ICPRuleSchema)
+            now_iso = datetime.now().isoformat()
+            output = [
+                {
+                    "id": str(point.id),
+                    "brain_id": brain_id,
+                    "category": point.payload.get("category"),
+                    # Fallback: use name (snake_cased) if attribute is missing
+                    "attribute": point.payload.get("attribute") or _derive_attribute(point.payload.get("name", "")),
+                    "display_name": point.payload.get("display_name", point.payload.get("name")),
+                    "condition": _normalize_condition(point.payload),
+                    "score_weight": point.payload.get("score_weight", point.payload.get("weight", 0)),
+                    "is_knockout": point.payload.get("is_knockout", False),
+                    # Fallback: use criteria if reasoning is missing
+                    "reasoning": point.payload.get("reasoning") or point.payload.get("criteria", ""),
+                    "created_at": point.payload.get("created_at", now_iso),
+                    "updated_at": point.payload.get("updated_at", now_iso),
+                }
+                for point in results
+            ]
+
+            log_tool_result("list_icp_rules", params, output, start)
+            return output
+
+        except ToolError:
+            raise
+        except Exception as e:
+            log_tool_error("list_icp_rules", params, e, start)
+            _handle_qdrant_error(e)
+
+    @mcp.tool()
+    async def list_response_templates(
+        brain_id: str,
+        reply_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        List all response templates for a brain without semantic search.
+
+        Used by the Dashboard UI to display brain content.
+        Output schema matches UI ResponseTemplateSchema contract.
+
+        Args:
+            brain_id: Brain ID for vertical isolation
+            reply_type: Optional filter by reply type
+            limit: Maximum templates to return (1-1000, default: 100)
+
+        Returns:
+            List of templates, each containing:
+            id, brain_id, reply_type, tier, template_text, variables,
+            personalization, metrics, created_at, updated_at
+        """
+        start = time.perf_counter()
+        params = {"brain_id": brain_id, "reply_type": reply_type, "limit": limit}
+
+        try:
+            # Input validation
+            if not validate_brain_id(brain_id):
+                raise ToolError(f"Invalid brain_id format: {brain_id}")
+
+            if limit < 1 or limit > 1000:
+                raise ToolError("Limit must be between 1 and 1000")
+
+            if reply_type is not None:
+                try:
+                    ReplyType(reply_type)
+                except ValueError:
+                    valid_types = ", ".join([r.value for r in ReplyType])
+                    raise ToolError(f"Invalid reply_type: {reply_type}. Valid: {valid_types}")
+
+            # Build filter
+            must_conditions = [
+                FieldCondition(key="brain_id", match=MatchValue(value=brain_id))
+            ]
+
+            if reply_type is not None:
+                must_conditions.append(
+                    FieldCondition(key="reply_type", match=MatchValue(value=reply_type))
+                )
+
+            # Scroll through collection
+            qdrant = _get_qdrant_client()
+            results, _ = qdrant.scroll(
+                collection_name="response_templates",
+                scroll_filter=Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+            )
+
+            # Map to result format - field names match UI contract (ResponseTemplateSchema)
+            now_iso = datetime.now().isoformat()
+            output = [
+                {
+                    "id": str(point.id),
+                    "brain_id": brain_id,
+                    "reply_type": point.payload.get("reply_type", point.payload.get("intent")),
+                    "tier": point.payload.get("tier", 1),
+                    "template_text": point.payload.get("template_text", ""),
+                    "variables": point.payload.get("variables", []),
+                    "personalization": point.payload.get(
+                        "personalization", point.payload.get("personalization_instructions", {})
+                    ),
+                    "metrics": None,
+                    "created_at": point.payload.get("created_at", now_iso),
+                    "updated_at": point.payload.get("updated_at", now_iso),
+                }
+                for point in results
+            ]
+
+            log_tool_result("list_response_templates", params, output, start)
+            return output
+
+        except ToolError:
+            raise
+        except Exception as e:
+            log_tool_error("list_response_templates", params, e, start)
+            _handle_qdrant_error(e)
+
+    @mcp.tool()
+    async def list_objection_handlers(
+        brain_id: str,
+        objection_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        List all objection handlers for a brain without semantic search.
+
+        Used by the Dashboard UI to display brain content.
+        Output schema matches UI ObjectionHandlerSchema contract.
+
+        Args:
+            brain_id: Brain ID for vertical isolation
+            objection_type: Optional filter by objection type
+            limit: Maximum handlers to return (1-1000, default: 100)
+
+        Returns:
+            List of handlers, each containing:
+            id, brain_id, objection_type, triggers, handler_strategy,
+            response, variables, follow_ups, usage_stats, created_at, updated_at
+        """
+        start = time.perf_counter()
+        params = {"brain_id": brain_id, "objection_type": objection_type, "limit": limit}
+
+        try:
+            # Input validation
+            if not validate_brain_id(brain_id):
+                raise ToolError(f"Invalid brain_id format: {brain_id}")
+
+            if limit < 1 or limit > 1000:
+                raise ToolError("Limit must be between 1 and 1000")
+
+            # Build filter
+            must_conditions = [
+                FieldCondition(key="brain_id", match=MatchValue(value=brain_id))
+            ]
+
+            if objection_type is not None:
+                must_conditions.append(
+                    FieldCondition(key="objection_type", match=MatchValue(value=objection_type))
+                )
+
+            # Scroll through collection
+            qdrant = _get_qdrant_client()
+            results, _ = qdrant.scroll(
+                collection_name="objection_handlers",
+                scroll_filter=Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+            )
+
+            # Map to result format - field names match UI contract (ObjectionHandlerSchema)
+            now_iso = datetime.now().isoformat()
+            output = [
+                {
+                    "id": str(point.id),
+                    "brain_id": brain_id,
+                    "objection_type": point.payload.get("objection_type"),
+                    "triggers": _get_triggers(point.payload),
+                    "handler_strategy": point.payload.get("handler_strategy", ""),
+                    "response": point.payload.get(
+                        "handler_response", point.payload.get("response", "")
+                    ),
+                    "variables": point.payload.get("variables", []),
+                    "follow_ups": point.payload.get("follow_up_actions", []),
+                    "usage_stats": None,
+                    "created_at": point.payload.get("created_at", now_iso),
+                    "updated_at": point.payload.get("updated_at", now_iso),
+                }
+                for point in results
+            ]
+
+            log_tool_result("list_objection_handlers", params, output, start)
+            return output
+
+        except ToolError:
+            raise
+        except Exception as e:
+            log_tool_error("list_objection_handlers", params, e, start)
+            _handle_qdrant_error(e)
+
+    @mcp.tool()
+    async def list_market_research(
+        brain_id: str,
+        content_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        List all market research documents for a brain without semantic search.
+
+        Used by the Dashboard UI to display brain content.
+        Output schema matches UI MarketResearchSchema contract.
+
+        Args:
+            brain_id: Brain ID for vertical isolation
+            content_type: Optional filter by content type
+            limit: Maximum documents to return (1-1000, default: 100)
+
+        Returns:
+            List of research documents, each containing:
+            id, brain_id, content_type, title, content, key_facts,
+            source, source_url, tags, status, created_at
+        """
+        start = time.perf_counter()
+        params = {"brain_id": brain_id, "content_type": content_type, "limit": limit}
+
+        try:
+            # Input validation
+            if not validate_brain_id(brain_id):
+                raise ToolError(f"Invalid brain_id format: {brain_id}")
+
+            if limit < 1 or limit > 1000:
+                raise ToolError("Limit must be between 1 and 1000")
+
+            if content_type is not None:
+                try:
+                    ContentType(content_type)
+                except ValueError:
+                    valid_types = ", ".join([c.value for c in ContentType])
+                    raise ToolError(f"Invalid content_type: {content_type}. Valid: {valid_types}")
+
+            # Build filter
+            must_conditions = [
+                FieldCondition(key="brain_id", match=MatchValue(value=brain_id))
+            ]
+
+            if content_type is not None:
+                must_conditions.append(
+                    FieldCondition(key="content_type", match=MatchValue(value=content_type))
+                )
+
+            # Scroll through collection
+            qdrant = _get_qdrant_client()
+            results, _ = qdrant.scroll(
+                collection_name="market_research",
+                scroll_filter=Filter(must=must_conditions),
+                limit=limit,
+                with_payload=True,
+            )
+
+            # Map to result format - field names match UI contract (MarketResearchSchema)
+            now_iso = datetime.now().isoformat()
+            output = [
+                {
+                    "id": str(point.id),
+                    "brain_id": brain_id,
+                    "content_type": point.payload.get("content_type"),
+                    "title": point.payload.get("title", point.payload.get("topic", "")),
+                    "content": point.payload.get("content", ""),
+                    "key_facts": point.payload.get("key_facts", []),
+                    "source": _normalize_source(point.payload.get("source")),
+                    "source_url": point.payload.get("source_url"),
+                    "tags": point.payload.get("tags", []),
+                    "status": point.payload.get("status", "active"),
+                    "created_at": point.payload.get("created_at", now_iso),
+                }
+                for point in results
+            ]
+
+            log_tool_result("list_market_research", params, output, start)
+            return output
+
+        except ToolError:
+            raise
+        except Exception as e:
+            log_tool_error("list_market_research", params, e, start)
+            _handle_qdrant_error(e)
+
+    # ==========================================================================
     # US5: Add Insight (P2)
     # ==========================================================================
 
@@ -835,11 +1384,11 @@ def register_qdrant_tools(mcp: FastMCP) -> None:
             qdrant = _get_qdrant_client()
 
             if brain_id:
-                # Fetch by exact ID
+                # Fetch by exact brain_id
                 results, _ = qdrant.scroll(
                     collection_name="brains",
                     scroll_filter=Filter(
-                        must=[FieldCondition(key="id", match=MatchValue(value=brain_id))]
+                        must=[FieldCondition(key="brain_id", match=MatchValue(value=brain_id))]
                     ),
                     limit=1,
                     with_payload=True,
@@ -873,9 +1422,17 @@ def register_qdrant_tools(mcp: FastMCP) -> None:
                 return None
 
             point = results[0]
+            payload_data = _serialize_payload(dict(point.payload))
+            # Map payload "id" to "brain_id" for dashboard compatibility
+            resolved_brain_id = payload_data.pop("id", None) or str(point.id)
+
+            # Calculate dynamic stats instead of using stale stored stats
+            dynamic_stats = await _calculate_brain_stats_internal(resolved_brain_id)
+
             output = {
-                "id": str(point.id),
-                **point.payload,
+                "brain_id": resolved_brain_id,
+                **payload_data,
+                "stats": dynamic_stats,  # Override stored stats with calculated
             }
 
             log_tool_result("get_brain", params, output, start)
@@ -907,7 +1464,21 @@ def register_qdrant_tools(mcp: FastMCP) -> None:
                 with_payload=True,
             )
 
-            output = [{"id": str(point.id), **point.payload} for point in results]
+            output = []
+            for point in results:
+                payload_data = _serialize_payload(dict(point.payload))
+                # Map payload "id" to "brain_id" for dashboard compatibility
+                # Payload stores brain_id under "id" key, but dashboard expects "brain_id"
+                brain_id = payload_data.pop("id", None) or str(point.id)
+
+                # Calculate dynamic stats for each brain
+                dynamic_stats = await _calculate_brain_stats_internal(brain_id)
+
+                output.append({
+                    "brain_id": brain_id,
+                    **payload_data,
+                    "stats": dynamic_stats,  # Override stored stats with calculated
+                })
 
             log_tool_result("list_brains", params, output, start)
             return output
