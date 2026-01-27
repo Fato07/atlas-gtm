@@ -7,9 +7,11 @@ Command-line interface for running RAG quality evaluations.
 import argparse
 import asyncio
 import logging
+import signal
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Generator, Optional
 
 import structlog
 
@@ -35,6 +37,32 @@ structlog.configure(
 )
 
 logger = structlog.get_logger()
+
+
+@contextmanager
+def timeout_context(seconds: int, operation: str) -> Generator[None, None, None]:
+    """
+    Context manager for timeout with graceful handling.
+
+    Uses SIGALRM to enforce timeout on synchronous operations.
+    Only works on Unix-like systems.
+
+    Args:
+        seconds: Maximum time to allow
+        operation: Description of operation for error message
+    """
+    def handler(signum: int, frame: object) -> None:
+        raise TimeoutError(f"{operation} timed out after {seconds}s")
+
+    # Store old handler and set alarm
+    old_handler = signal.signal(signal.SIGALRM, handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        # Cancel alarm and restore handler
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -161,14 +189,24 @@ async def run_evaluation(args: argparse.Namespace) -> int:
     if datasets_dir is None:
         datasets_dir = Path(__file__).parent / "datasets"
 
-    # Run evaluation
+    # Run evaluation with timeout enforcement
     try:
-        results = await evaluate_collections(
-            config=config,
-            collection_names=args.collections,
-            brain_id=args.brain_id,
-            datasets_dir=datasets_dir,
+        results = await asyncio.wait_for(
+            evaluate_collections(
+                config=config,
+                collection_names=args.collections,
+                brain_id=args.brain_id,
+                datasets_dir=datasets_dir,
+            ),
+            timeout=config.timeout_seconds,
         )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Evaluation timed out",
+            timeout_seconds=config.timeout_seconds,
+            hint="Increase timeout or reduce test cases with --max-samples",
+        )
+        return 1
     except Exception as e:
         logger.error("Evaluation failed", error=str(e))
         return 1
@@ -196,8 +234,20 @@ async def run_evaluation(args: argparse.Namespace) -> int:
                     results=results,
                     brain_id=args.brain_id,
                 )
-                langfuse_reporter.flush()
-                langfuse_reporter.shutdown()
+
+                # Add timeouts for flush/shutdown to prevent CI hangs
+                try:
+                    with timeout_context(10, "Langfuse flush"):
+                        langfuse_reporter.flush()
+                except TimeoutError as e:
+                    logger.warning("Langfuse flush timed out", error=str(e))
+
+                try:
+                    with timeout_context(5, "Langfuse shutdown"):
+                        langfuse_reporter.shutdown()
+                except TimeoutError as e:
+                    logger.warning("Langfuse shutdown timed out", error=str(e))
+
                 logger.info("Reported to Langfuse", trace_id=trace_id)
             except Exception as e:
                 logger.error("Failed to report to Langfuse", error=str(e))

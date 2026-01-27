@@ -19,6 +19,7 @@ on:
 jobs:
   evaluate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # Prevent hanging for 6 hours (GitHub default)
     permissions:
       contents: read
       pull-requests: write
@@ -28,6 +29,12 @@ jobs:
         image: qdrant/qdrant:latest
         ports:
           - 6333:6333
+        # Health check ensures Qdrant is ready before seeding
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:6333/healthz || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v4
