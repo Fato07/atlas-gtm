@@ -24,6 +24,18 @@ Atlas GTM is an AI-first GTM Operations System for CodesDevs. It uses swappable 
 
 See `docs/architecture/data-flow.md` and `specs/knowledge-base.md` for details.
 
+### Dashboard API Data Contracts
+
+The Dashboard API follows a **schema-first architecture**:
+- Zod schemas in `packages/dashboard-api/src/contracts/` are the source of truth
+- MCP responses are validated at the boundary before transformation
+- See `docs/architecture/data-contracts.md` for the full pattern
+
+When adding new dashboard entities:
+1. Define Zod schema in `contracts/`
+2. Create `McpXxxResponseSchema` for MCP response validation
+3. Transform with explicit field mapping and output validation
+
 ## Core Principles
 
 ### 1. Spec-Driven Development
@@ -69,19 +81,27 @@ Don't rely on stale knowledge - always pull fresh docs for API specifics, especi
 
 ```bash
 # Setup
-bun install && cd mcp-servers && uv sync
+bun run setup              # Install all dependencies
 
-# Development
-bun run dev                    # Start all packages in watch mode
-bun run dev:agents             # Start agents only
-bun run mcp:dev                # Start MCP servers (Python)
+# Development (Unified - Recommended)
+bun run dev:all            # Full stack: Docker + MCP + Dashboard + All Agents
+bun run dev:services       # Local services only (assumes Docker running)
+bun run dev:agents         # All 4 agents with colored output
+bun run dev:dashboard      # Dashboard API + UI only
+
+# Development (Individual)
+bun run mcp:rest           # MCP REST server (port 8100)
+bun run agent:lead-scorer  # Lead Scorer (port 4001)
+bun run agent:reply-handler # Reply Handler (port 4002)
+bun run agent:meeting-prep # Meeting Prep (port 4003)
+bun run agent:learning-loop # Learning Loop (port 4004)
 
 # Testing
-bun test                       # All tests
-bun test packages/agents       # Agent tests only
+bun test                   # All tests
+bun test packages/agents   # Agent tests only
 
 # Type checking
-bun run typecheck              # All packages
+bun run typecheck          # All packages
 ```
 
 ## Critical Rules
@@ -218,6 +238,8 @@ See `docs/architecture/data-flow.md` for comprehensive system data flow diagrams
 | Attio MCP Server | ✅ | `007-attio-mcp-server` |
 | Instantly MCP Server | ✅ | `011-instantly-mcp-upgrade` |
 | HeyReach MCP Server | ✅ | `012-heyreach-mcp-server` |
+| Operator Dashboard API | ✅ | `016-operator-dashboard` |
+| Operator Dashboard UI | ✅ | `016-operator-dashboard` |
 
 ### Self-Updating Instructions
 
@@ -335,8 +357,11 @@ Workflow files location: `workflows/n8n/`
 - Qdrant (verticals collection), Upstash Redis (classification cache) (014-multi-vertical-brain-swap)
 - TypeScript 5.4+ (Bun runtime) for agents, Python 3.11+ for MCP servers + @anthropic-ai/sdk, @qdrant/js-client-rest, @slack/web-api, Zod, FastMCP ≥0.4.0, httpx, tenacity (015-gtm-ops-workflows)
 - Qdrant (vector collections: icp_rules, bucket_c_patterns, objection_handlers), Airtable (lead database), Attio (CRM), Upstash Redis (caching) (015-gtm-ops-workflows)
+- TypeScript 5.4+ (Bun runtime) for API, React 18+ for frontend + React, Tailwind CSS, shadcn/ui components, @tanstack/react-query, Zod (016-operator-dashboard)
+- Qdrant (vector collections via MCP REST API), Upstash Redis (session/cache) (016-operator-dashboard)
 
 ## Recent Changes
+- 016-operator-dashboard: Full operator dashboard with 10 user stories. Dashboard API (Hono BFF with Zod contracts, MCP client integration, SSE real-time updates) + Dashboard UI (React+Vite+shadcn/ui for brain management, KB editing, agent monitoring, metrics). Features: brain lifecycle management, ICP rules/templates/objection handlers CRUD, market research documents, pending validations queue, activity feed, agent health monitoring, and manual action triggers.
 - 011-instantly-mcp-upgrade + 012-heyreach-mcp-server: Production-ready MCP servers for email outreach (Instantly v2 API) and LinkedIn automation (HeyReach API). Instantly upgraded from 7 to 38 tools with v2 API, retry logic (tenacity), and structured logging. HeyReach new implementation with 35 tools for campaigns, inbox, accounts, lists, leads, stats, and webhooks. Both have comprehensive test suites (164 tests total).
 - 009-structured-outputs-refactor: Migrated Lead Scorer and Reply Handler agents to use Anthropic SDK structured outputs via tool use pattern. Replaced fragile regex JSON extraction with type-safe `buildTool()` → `forceToolChoice()` → `extractToolResult()` → `TOOL.parse()` flow. Added JSDoc examples to lib utilities. 38.8% code reduction in implementation files. All 817 tests pass.
 - 010-learning-loop: Automated insight extraction from email replies and call transcripts. Quality gates (confidence, duplicate, importance). Slack-based validation queue for human review. KB write with provenance tracking. Weekly synthesis reports. Template A/B performance tracking.

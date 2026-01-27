@@ -1,0 +1,208 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 38 33% 97%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 15 66% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 40 5% 96%;
+    --secondary-foreground: 0 0% 10%;
+    --muted: 40 5% 96%;
+    --muted-foreground: 0 0% 42%;
+    --accent: 40 5% 96%;
+    --accent-foreground: 0 0% 10%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 40 5% 90%;
+    --input: 40 5% 90%;
+    --ring: 15 66% 60%;
+    --radius: 0.5rem;
+    /* Status colors */
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 10%;
+    --error: 0 84% 60%;
+    --error-foreground: 0 0% 100%;
+  }
+
+  .dark {
+    --background: 220 13% 10%;
+    --foreground: 0 0% 95%;
+    --card: 220 13% 13%;
+    --card-foreground: 0 0% 95%;
+    --popover: 220 13% 13%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 15 66% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 13% 18%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 220 13% 18%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 220 13% 18%;
+    --accent-foreground: 0 0% 95%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 20%;
+    --input: 220 13% 20%;
+    --ring: 15 66% 60%;
+    /* Status colors for dark mode */
+    --success: 142 76% 42%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 0 0% 10%;
+    --error: 0 62% 55%;
+    --error-foreground: 0 0% 100%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+/* Skeleton shimmer animation */
+@layer components {
+  .skeleton {
+    @apply relative overflow-hidden bg-muted;
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted)) 0%,
+      hsl(var(--muted) / 0.5) 50%,
+      hsl(var(--muted)) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+}
+
+/* Focus ring styles */
+@layer utilities {
+  .focus-ring {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+/* Scrollbar styles */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 3px;
+  }
+}
+
+/* Responsive breakpoints for tablet/desktop */
+@layer utilities {
+  /* Hide on mobile, show on tablet+ */
+  .tablet-only {
+    @apply hidden md:block;
+  }
+
+  /* Show on mobile, hide on tablet+ */
+  .mobile-only {
+    @apply block md:hidden;
+  }
+
+  /* Responsive padding */
+  .responsive-padding {
+    @apply px-4 md:px-6 lg:px-8;
+  }
+
+  /* Responsive container */
+  .responsive-container {
+    @apply mx-auto w-full max-w-7xl px-4 md:px-6 lg:px-8;
+  }
+
+  /* Responsive grid for dashboard cards */
+  .dashboard-grid {
+    @apply grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4;
+  }
+
+  /* Responsive two-column layout */
+  .split-view {
+    @apply flex flex-col md:flex-row md:gap-6;
+  }
+
+  .split-view-sidebar {
+    @apply w-full md:w-80 lg:w-96 shrink-0;
+  }
+
+  .split-view-content {
+    @apply flex-1 min-w-0;
+  }
+}
+
+/* Keyboard focus styles - WCAG 2.1 AA compliant */
+@layer utilities {
+  /* Enhanced focus ring for interactive elements */
+  .focus-visible-ring {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+
+  /* Focus styles for buttons and links */
+  .interactive-focus:focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+
+  /* Skip to content link for keyboard users */
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-primary focus:text-primary-foreground focus:rounded-md;
+  }
+}
+
+/* Shimmer animation for skeletons */
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  [class*="animate-"] {
+    animation: none !important;
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  :root {
+    --border: 0 0% 30%;
+    --ring: 0 0% 0%;
+  }
+
+  .dark {
+    --border: 0 0% 70%;
+    --ring: 0 0% 100%;
+  }
+}
